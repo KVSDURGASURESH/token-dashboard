@@ -1,4 +1,4 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, readHashParam, writeHashParam } from '/web/app.js';
 
 const SORTS = [
   { key: 'tokens', label: 'Most tokens' },
@@ -6,15 +6,8 @@ const SORTS = [
 ];
 
 function readSort() {
-  const q = (location.hash.split('?')[1] || '');
-  const m = /(?:^|&)sort=([^&]+)/.exec(q);
-  const k = m && decodeURIComponent(m[1]);
-  return SORTS.find(s => s.key === k) || SORTS[0];
-}
-
-function writeSort(key) {
-  const base = (location.hash.replace(/^#/, '').split('?')[0]) || '/prompts';
-  location.hash = '#' + base + '?sort=' + encodeURIComponent(key);
+  const key = readHashParam('sort');
+  return SORTS.find(s => s.key === key) || SORTS[0];
 }
 
 export default async function (root) {
@@ -64,8 +57,8 @@ export default async function (root) {
     <div id="drawer"></div>
   `;
 
-  root.querySelectorAll('.range-tabs button').forEach(btn => {
-    btn.addEventListener('click', () => writeSort(btn.dataset.sort));
+  root.querySelectorAll('.range-tabs button[data-sort]').forEach(btn => {
+    btn.addEventListener('click', () => writeHashParam('sort', btn.dataset.sort));
   });
 
   root.querySelectorAll('#prompts tbody tr').forEach(tr => {

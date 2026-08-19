@@ -18,7 +18,7 @@ from .db import (
 from .pricing import load_pricing, cost_for, get_plan, set_plan
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_dir
-from .skills import cached_catalog
+from .skills import cached_catalog, tokens_for
 from .profile import build_profile
 
 
@@ -127,8 +127,7 @@ def build_handler(db_path: str, projects_dir: str):
                 rows = skill_breakdown(db_path, since, until)
                 catalog = cached_catalog()
                 for r in rows:
-                    info = catalog.get(r["skill"])
-                    r["tokens_per_call"] = info["tokens"] if info else None
+                    r["tokens_per_call"] = tokens_for(r["skill"], catalog)
                 return _send_json(self, rows)
             if path == "/api/by-model":
                 rows = model_breakdown(db_path, since, until)

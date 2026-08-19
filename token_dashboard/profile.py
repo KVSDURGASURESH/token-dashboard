@@ -86,23 +86,16 @@ def engineering_score(db_path, since=None, until=None) -> int:
     over and over within a session) and reasonable breadth."""
     rng, args = _range_clause(since, until)
     with connect(db_path) as c:
-        per_file = c.execute(f"""
-            SELECT COUNT(*) AS n
+        # One row per (session, file) touched, plus how many of those were
+        # touched more than twice in the same session.
+        retouch_row = c.execute(f"""
+            SELECT COUNT(*) AS files,
+                   SUM(CASE WHEN touches > 2 THEN 1 ELSE 0 END) AS retouched
               FROM (
                 SELECT session_id, target, COUNT(*) AS touches
                   FROM tool_calls
                  WHERE tool_name IN ('Read','Edit','Write') AND target IS NOT NULL {rng}
                  GROUP BY session_id, target
-              )
-        """, args).fetchone()
-        retouched = c.execute(f"""
-            SELECT COUNT(*) AS n
-              FROM (
-                SELECT session_id, target, COUNT(*) AS touches
-                  FROM tool_calls
-                 WHERE tool_name IN ('Read','Edit','Write') AND target IS NOT NULL {rng}
-                 GROUP BY session_id, target
-                HAVING touches > 2
               )
         """, args).fetchone()
         breadth_row = c.execute(f"""
@@ -113,8 +106,8 @@ def engineering_score(db_path, since=None, until=None) -> int:
                  GROUP BY session_id
             )
         """, args).fetchone()
-    total_files = per_file["n"] or 0
-    retouch_rate = (retouched["n"] or 0) / total_files if total_files else 0.0
+    total_files = retouch_row["files"] or 0
+    retouch_rate = (retouch_row["retouched"] or 0) / total_files if total_files else 0.0
     retouch_score = _clamp_score(retouch_rate, worst=0.5, best=0.0)
     avg_files = breadth_row["avg_files"] or 0.0
     breadth_score = _clamp_score(avg_files, worst=1.0, best=10.0)
