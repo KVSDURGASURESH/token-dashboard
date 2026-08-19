@@ -51,6 +51,7 @@ def steering_score(db_path, since=None, until=None) -> int:
                 SELECT session_id, SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns
                   FROM messages WHERE 1=1 {rng}
                  GROUP BY session_id
+                HAVING turns > 0
             )
         """, args).fetchone()
     n = prompt_row["n"] or 0
@@ -65,18 +66,20 @@ def execution_score(db_path, since=None, until=None) -> int:
     """Clean, capable tool use: low error rate, broad tool fluency."""
     rng, args = _range_clause(since, until)
     with connect(db_path) as c:
-        err_row = c.execute(f"""
-            SELECT COUNT(*) AS n, SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS errors
+        n = c.execute(f"""
+            SELECT COUNT(*) AS n
               FROM tool_calls WHERE tool_name != '_tool_result' {rng}
-        """, args).fetchone()
-        div_row = c.execute(f"""
+        """, args).fetchone()["n"] or 0
+        errors = c.execute(f"""
+            SELECT COUNT(*) AS n
+              FROM tool_calls WHERE tool_name = '_tool_result' AND is_error = 1 {rng}
+        """, args).fetchone()["n"] or 0
+        diversity = c.execute(f"""
             SELECT COUNT(DISTINCT tool_name) AS n
               FROM tool_calls WHERE tool_name != '_tool_result' {rng}
-        """, args).fetchone()
-    n = err_row["n"] or 0
-    error_rate = (err_row["errors"] or 0) / n if n else 0.0
+        """, args).fetchone()["n"] or 0
+    error_rate = errors / n if n else 0.0
     error_score = _clamp_score(error_rate, worst=0.10, best=0.0)
-    diversity = div_row["n"] or 0
     diversity_score = _clamp_score(diversity, worst=1, best=8)
     return round((error_score + diversity_score) / 2)
 

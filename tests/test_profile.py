@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from token_dashboard.profile import (
     build_profile, steering_score, execution_score,
     engineering_score, planning_score, MIN_USER_TURNS_FOR_PROFILE, _archetype,
 )
+from token_dashboard.scanner import scan_dir
 
 
 class ProfileTestBase(unittest.TestCase):
@@ -78,9 +80,58 @@ class ExecutionScoreTests(ProfileTestBase):
     def test_high_error_rate_scores_low(self):
         self._msg("u1", "s1", "user", "2026-04-15T00:00:00Z")
         for i in range(20):
-            self._tool(f"t{i}", "s1", "Bash", "x", "2026-04-15T00:00:00Z", is_error=1)
+            self._tool(f"call{i}", "s1", "Bash", "x", "2026-04-15T00:00:00Z", is_error=0)
+            self._tool(f"result{i}", "s1", "_tool_result", "toolu_x", "2026-04-15T00:00:00Z", is_error=1)
         score = execution_score(self.db)
         self.assertLess(score, 30)
+
+
+class ExecutionScoreRealScannerTests(unittest.TestCase):
+    """Anchors execution_score to the actual scanner pipeline, not hand-written
+    tool_calls rows — the scanner is the only source of truth for what DB
+    states are actually reachable (see the note on ExecutionScoreTests above)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.db = os.path.join(self.tmp, "t.db")
+        self.proj_root = os.path.join(self.tmp, "projects")
+        os.makedirs(os.path.join(self.proj_root, "p"))
+        init_db(self.db)
+
+    def _write_jsonl(self, lines):
+        path = os.path.join(self.proj_root, "p", "s1.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line) + "\n")
+
+    def test_scanner_produced_errors_lower_execution_score(self):
+        lines = []
+        for i in range(15):
+            lines.append({
+                "type": "assistant", "uuid": f"a{i}", "sessionId": "s1",
+                "timestamp": "2026-04-15T00:00:00Z", "isSidechain": False,
+                "message": {
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "content": [
+                        {"type": "tool_use", "id": f"tu{i}", "name": "Bash",
+                         "input": {"command": "false"}},
+                    ],
+                },
+            })
+            lines.append({
+                "type": "user", "uuid": f"u{i}", "sessionId": "s1",
+                "timestamp": "2026-04-15T00:00:01Z", "isSidechain": False,
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": f"tu{i}",
+                     "content": "command failed", "is_error": True},
+                ]},
+            })
+        self._write_jsonl(lines)
+        n = scan_dir(self.proj_root, self.db)
+        self.assertEqual(n["tools"], 30)  # 15 tool_use + 15 tool_result
+        score = execution_score(self.db)
+        self.assertLess(score, 30, "execution_score must reflect real scanner-produced errors")
 
 
 class EngineeringScoreTests(ProfileTestBase):
