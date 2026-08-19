@@ -270,5 +270,5 @@ hr.divider { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
   display: block;
   height: 100%;
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
-  box-shadow: 0 0 8px var(--accent-glow);
+  box-shadow: 0 0 8px var(--accent-glow, rgba(74, 158, 255, 0.25));
 }
