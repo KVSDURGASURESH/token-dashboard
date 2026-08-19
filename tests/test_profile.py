@@ -129,11 +129,21 @@ class ArchetypeLabelTests(unittest.TestCase):
         scores = {"steering": 60, "execution": 62, "engineering": 58, "planning": 61}
         self.assertEqual(_archetype(scores), "The Generalist")
 
-    def test_unmapped_top_pair_falls_back_to_generalist(self):
-        # top-2 here is {steering, planning}, which has no entry in
-        # ARCHETYPES — confirms the fallback is deterministic, not a crash.
+    def test_steering_and_planning_top_gives_strategist(self):
         scores = {"steering": 90, "planning": 88, "engineering": 25, "execution": 20}
-        self.assertEqual(_archetype(scores), "The Generalist")
+        self.assertEqual(_archetype(scores), "The Strategist")
+
+    def test_execution_and_engineering_top_gives_craftsman(self):
+        scores = {"execution": 85, "engineering": 82, "steering": 30, "planning": 25}
+        self.assertEqual(_archetype(scores), "The Craftsman")
+
+    def test_three_way_tie_breaks_alphabetically(self):
+        # engineering, planning, steering are tied at the top; execution trails.
+        # Alphabetical tie-break must deterministically pick the same two
+        # dimensions (engineering, planning — alphabetically first of the
+        # three) every time, not depend on dict/set iteration order.
+        scores = {"engineering": 90, "planning": 90, "steering": 90, "execution": 20}
+        self.assertEqual(_archetype(scores), "The Architect")
 
 
 if __name__ == "__main__":

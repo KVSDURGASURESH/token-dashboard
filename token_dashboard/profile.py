@@ -19,6 +19,8 @@ ARCHETYPES = {
     frozenset({"steering", "engineering"}): "The Precision Editor",
     frozenset({"execution", "steering"}): "The Sprinter",
     frozenset({"execution", "planning"}): "The Operator",
+    frozenset({"execution", "engineering"}): "The Craftsman",
+    frozenset({"steering", "planning"}): "The Strategist",
 }
 
 BALANCE_THRESHOLD = 10
