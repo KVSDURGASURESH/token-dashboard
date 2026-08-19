@@ -58,6 +58,10 @@ class ServerTests(unittest.TestCase):
         self.assertIsInstance(body, list)
         self.assertEqual(body[0]["project_slug"], "p")
 
+    def test_profile_json_insufficient_data(self):
+        body = json.loads(self._get("/api/profile"))
+        self.assertIn("insufficient_data", body)
+
     def test_plan_json(self):
         body = json.loads(self._get("/api/plan"))
         self.assertIn("plan", body)
