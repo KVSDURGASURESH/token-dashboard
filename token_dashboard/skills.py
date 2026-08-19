@@ -12,6 +12,7 @@ Sizes are in chars; token estimate is chars // 4 (the same approximation
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -21,9 +22,6 @@ _DEFAULT_ROOTS = [
     Path.home() / ".claude" / "scheduled-tasks",
     Path.home() / ".claude" / "plugins",
 ]
-
-
-import re
 
 _VERSION_RE = re.compile(r"^\d+\.\d+")
 _STRUCTURE_NAMES = {"skills", "plugins", "marketplaces", "cache", ".claude"}
@@ -44,9 +42,9 @@ def _slugs_for(skill_md: Path) -> list[str]:
     that plausibly names a plugin (not a structural/version/temp-dir token).
     Unused slugs are harmless — the user only invokes real ones.
     """
-    parts = skill_md.parts
-    if "SKILL.md" not in parts or skill_md.name != "SKILL.md":
+    if skill_md.name != "SKILL.md":
         return []
+    parts = skill_md.parts
     skill_name = skill_md.parent.name
     slugs = {skill_name}
     # Locate the `skills` folder that contains this skill.
@@ -61,7 +59,7 @@ def _slugs_for(skill_md: Path) -> list[str]:
             continue
         if seg.startswith("temp_git_"):
             continue
-        if seg.endswith(":") or ":" in seg:  # drive letters like "C:"
+        if ":" in seg:  # drive letters like "C:"
             continue
         slugs.add(f"{seg}:{skill_name}")
     return sorted(slugs)

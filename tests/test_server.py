@@ -42,7 +42,7 @@ class ServerTests(unittest.TestCase):
 
     def test_index_html(self):
         body = self._get("/")
-        self.assertIn(b"Token Dashboard", body)
+        self.assertIn(b"TOKEN DASHBOARD", body)
 
     def test_overview_json(self):
         body = json.loads(self._get("/api/overview"))
@@ -57,6 +57,10 @@ class ServerTests(unittest.TestCase):
         body = json.loads(self._get("/api/projects"))
         self.assertIsInstance(body, list)
         self.assertEqual(body[0]["project_slug"], "p")
+
+    def test_profile_json_insufficient_data(self):
+        body = json.loads(self._get("/api/profile"))
+        self.assertIn("insufficient_data", body)
 
     def test_plan_json(self):
         body = json.loads(self._get("/api/plan"))

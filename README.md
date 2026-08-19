@@ -57,6 +57,17 @@ Data flow:
 4. Server exposes JSON APIs, SSE for live updates
 5. Frontend renders via hash-router + ECharts
 
+## The 8 tabs
+
+- **Overview** — all-time input/output/cache tokens, sessions, turns, estimated cost on your chosen plan, daily work and cache-read charts, tokens-by-project, token share by model, top tools by call count, and recent sessions. This is the landing tab.
+- **Prompts** — your most expensive user prompts ranked by tokens. Click any row to see the assistant response, tool calls made, and the size of each tool result.
+- **Sessions** — turn-by-turn view of any single session, with per-turn tokens and tool calls.
+- **Projects** — per-project comparison: tokens, session counts, and which files were touched most.
+- **Profile** — four rule-based 0-100 scores (Steering, Execution, Engineering, Planning) plus an archetype label, computed from your own local session history — not a comparison to other users, since there's no population to compare against locally.
+- **Skills** — which skills you invoke most often, and (where we can measure them) their token cost. See [limitations](docs/KNOWN_LIMITATIONS.md#skills-token-counts-are-partial).
+- **Tips** — rule-based suggestions for reducing token usage (repeated file reads, oversized tool results, low cache-hit rate, etc.).
+- **Settings** — switch pricing between API / Pro / Max / Max-20x so cost figures everywhere else reflect your actual plan.
+
 ## Upstream
 
 This is a customized fork of [`nateherkai/token-dashboard`](https://github.com/nateherkai/token-dashboard) (MIT).

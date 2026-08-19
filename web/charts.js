@@ -21,6 +21,12 @@ const Y_AXIS = {
   axisLabel: { color: '#7A8699' },
 };
 
+const LEGEND = {
+  textStyle: { color: '#7A8699' },
+  top: 0, right: 0, icon: 'roundRect',
+  itemWidth: 8, itemHeight: 8,
+};
+
 const TOOLTIP = {
   trigger: 'axis',
   backgroundColor: '#0D1117',
@@ -41,7 +47,7 @@ export function lineChart(el, { x, series }) {
   c.setOption({
     ...BASE,
     tooltip: TOOLTIP,
-    legend: { textStyle: { color: '#7A8699' }, top: 0, right: 0, icon: 'roundRect', itemWidth: 8, itemHeight: 8 },
+    legend: LEGEND,
     xAxis: { ...X_AXIS, type: 'category', data: x, boundaryGap: false },
     yAxis: { ...Y_AXIS, type: 'value' },
     series: series.map(s => ({
@@ -77,11 +83,7 @@ export function stackedBarChart(el, { categories, series, formatter }) {
       axisPointer: { type: 'shadow' },
       valueFormatter: formatter || (v => Number(v).toLocaleString()),
     },
-    legend: {
-      textStyle: { color: '#7A8699' },
-      top: 0, right: 0, icon: 'roundRect',
-      itemWidth: 8, itemHeight: 8,
-    },
+    legend: LEGEND,
     xAxis: {
       ...X_AXIS, type: 'category', data: categories,
       axisLabel: { ...X_AXIS.axisLabel, interval: categories.length > 20 ? 'auto' : 0, rotate: categories.length > 12 ? 45 : 0 },
@@ -109,11 +111,7 @@ export function groupedBarChart(el, { categories, series, formatter }) {
       axisPointer: { type: 'shadow' },
       valueFormatter: formatter || (v => Number(v).toLocaleString()),
     },
-    legend: {
-      textStyle: { color: '#7A8699' },
-      top: 0, right: 0, icon: 'roundRect',
-      itemWidth: 8, itemHeight: 8,
-    },
+    legend: LEGEND,
     xAxis: {
       ...X_AXIS, type: 'category', data: categories,
       axisLabel: { ...X_AXIS.axisLabel, interval: 0, rotate: categories.length > 5 ? 25 : 0 },

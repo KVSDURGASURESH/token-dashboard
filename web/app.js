@@ -31,11 +31,23 @@ export async function api(path, opts) {
 
 export const state = { plan: 'api', pricing: null };
 
+// Query params ride along inside the hash, e.g. #/overview?range=7d.
+export function readHashParam(name) {
+  return new URLSearchParams(location.hash.split('?')[1] || '').get(name);
+}
+
+export function writeHashParam(name, value) {
+  // An empty hash means the default route, which is /overview.
+  const base = location.hash.replace(/^#/, '').split('?')[0] || '/overview';
+  location.hash = `#${base}?${name}=${encodeURIComponent(value)}`;
+}
+
 const ROUTES = {
   '/overview': () => import('/web/routes/overview.js'),
   '/prompts':  () => import('/web/routes/prompts.js'),
   '/sessions': () => import('/web/routes/sessions.js'),
   '/projects': () => import('/web/routes/projects.js'),
+  '/profile':  () => import('/web/routes/profile.js'),
   '/skills':   () => import('/web/routes/skills.js'),
   '/tips':     () => import('/web/routes/tips.js'),
   '/settings': () => import('/web/routes/settings.js'),

@@ -653,3 +653,26 @@ hr.divider {
   background: var(--accent-dim);
   color: var(--accent-2);
 }
+
+/* builder profile — score bars */
+.score-row {
+  display: grid; grid-template-columns: 140px 1fr 44px;
+  align-items: center; gap: 12px; margin: 14px 0;
+}
+.score-row .dim-label {
+  color: var(--text); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.score-row .dim-value {
+  font-family: var(--mono); text-align: right;
+  color: var(--accent); font-weight: 600;
+}
+.score-bar-track {
+  height: 8px; border-radius: 4px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--border);
+}
+.score-bar-fill {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
