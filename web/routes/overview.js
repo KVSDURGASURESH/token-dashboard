@@ -60,8 +60,8 @@ export default async function (root) {
 
   root.innerHTML = `
     <div class="flex" style="margin-bottom:14px">
-      <h2 style="margin:0;font-size:16px;letter-spacing:-0.01em">Overview</h2>
-      <span class="muted" style="font-size:12px">${range.days ? `last ${range.days} days` : 'all time'}</span>
+      <h2 style="margin:0;font-size:14px;letter-spacing:0.1em;font-weight:800">OVERVIEW</h2>
+      <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em">${range.days ? `LAST ${range.days} DAYS` : 'ALL TIME'}</span>
       <div class="spacer"></div>
       ${rangeTabs}
     </div>
@@ -81,7 +81,7 @@ export default async function (root) {
     </div>
 
     <details class="card glossary" style="margin-top:16px">
-      <summary><h3 style="display:inline-block;margin:0">What do these numbers mean?</h3><span class="muted" style="font-size:12px">— click to expand</span></summary>
+      <summary><h3 style="display:inline-block;margin:0">WHAT DO THESE NUMBERS MEAN?</h3><span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em">— CLICK TO EXPAND</span></summary>
       <dl>
         <dt>Session</dt><dd>One run of Claude Code (from <code>claude</code> to exit). Each session is a single <code>.jsonl</code> file.</dd>
         <dt>Turn</dt><dd>One message you sent to Claude. Each turn triggers a response (possibly with tool calls in between).</dd>
@@ -95,30 +95,30 @@ export default async function (root) {
 
     <div class="row cols-2" style="margin-top:16px">
       <div class="card">
-        <h3>Your daily work</h3>
-        <p class="muted" style="margin:-4px 0 10px;font-size:12px">Tokens you paid for: what you sent (<b>input</b>), what Claude wrote (<b>output</b>), and what got stored for re-use (<b>cache create</b>).</p>
+        <h3>DAILY WORK</h3>
+        <p class="muted" style="margin:-4px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">TOKENS YOU PAID FOR: WHAT YOU SENT (<b>INPUT</b>), WHAT CLAUDE WROTE (<b>OUTPUT</b>), AND WHAT GOT STORED FOR RE-USE (<b>CACHE CREATE</b>).</p>
         <div id="ch-daily-billable" style="height:260px"></div>
       </div>
       <div class="card">
-        <h3>Daily cache reads</h3>
-        <p class="muted" style="margin:-4px 0 10px;font-size:12px"><b>Cache reads</b> are cheap re-uses of things Claude already saw (like your CLAUDE.md). They cost ~10× less than regular input tokens — high numbers here are a good thing.</p>
+        <h3>DAILY CACHE READS</h3>
+        <p class="muted" style="margin:-4px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em"><b>CACHE READS</b> ARE CHEAP RE-USES OF THINGS CLAUDE ALREADY SAW. THEY COST ~10× LESS THAN REGULAR INPUT TOKENS — HIGH NUMBERS HERE = GOOD.</p>
         <div id="ch-daily-cache" style="height:260px"></div>
       </div>
     </div>
 
     <div class="row cols-2" style="margin-top:16px">
-      <div class="card"><h3>Tokens by project</h3><div id="ch-projects" style="height:320px"></div></div>
+      <div class="card"><h3>TOKENS BY PROJECT</h3><div id="ch-projects" style="height:320px"></div></div>
       <div class="card">
-        <h3>Token usage by model</h3>
-        <p class="muted" style="margin:-4px 0 4px;font-size:12px">Share of billable tokens per Claude model.</p>
+        <h3>TOKEN USAGE BY MODEL</h3>
+        <p class="muted" style="margin:-4px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">SHARE OF BILLABLE TOKENS PER CLAUDE MODEL.</p>
         <div id="ch-model" style="height:300px"></div>
       </div>
     </div>
 
     <div class="row cols-2" style="margin-top:16px">
-      <div class="card"><h3>Top tools (by call count)</h3><div id="ch-tools" style="height:320px"></div></div>
+      <div class="card"><h3>TOP TOOLS (BY CALL COUNT)</h3><div id="ch-tools" style="height:320px"></div></div>
       <div class="card">
-        <h3 style="display:flex;align-items:center"><span>Recent sessions</span><span class="spacer"></span><a href="#/sessions" style="font-weight:400;font-size:12px">all →</a></h3>
+        <h3 style="display:flex;align-items:center"><span>RECENT SESSIONS</span><span class="spacer"></span><a href="#/sessions" style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.08em">ALL →</a></h3>
         <table>
           <thead><tr><th>started</th><th>project</th><th class="num">tokens</th></tr></thead>
           <tbody>

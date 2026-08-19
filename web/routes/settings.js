@@ -5,9 +5,9 @@ export default async function (root) {
   const plans = Object.entries(cur.pricing.plans);
   root.innerHTML = `
     <div class="card">
-      <h2>Settings</h2>
-      <h3 style="margin-top:16px">Plan</h3>
-      <p class="muted" style="margin:0 0 12px">Sets how cost is displayed. API mode shows pay-per-token rates. Subscription modes show what you actually pay each month.</p>
+      <h2>SETTINGS</h2>
+      <h3 style="margin-top:16px">PLAN</h3>
+      <p class="muted" style="margin:0 0 12px;text-transform:uppercase;font-size:11px;letter-spacing:0.04em">SETS HOW COST IS DISPLAYED. API MODE SHOWS PAY-PER-TOKEN RATES. SUBSCRIPTION MODES SHOW WHAT YOU ACTUALLY PAY EACH MONTH.</p>
       <div class="flex">
         <select id="plan">
           ${plans.map(([k,v]) => `<option value="${k}" ${k===cur.plan?'selected':''}>${v.label}${v.monthly?` — $${v.monthly}/mo`:''}</option>`).join('')}
@@ -18,8 +18,8 @@ export default async function (root) {
 
       <hr class="divider">
 
-      <h3>Pricing table</h3>
-      <p class="muted" style="margin:0 0 12px">Edit <code>pricing.json</code> in the project root to change rates. Reload the page after editing.</p>
+      <h3>PRICING TABLE</h3>
+      <p class="muted" style="margin:0 0 12px;text-transform:uppercase;font-size:11px;letter-spacing:0.04em">EDIT <code>pricing.json</code> IN THE PROJECT ROOT TO CHANGE RATES. RELOAD THE PAGE AFTER EDITING.</p>
       <table>
         <thead><tr><th>model</th><th class="num">input</th><th class="num">output</th><th class="num">cache read</th><th class="num">cache 5m</th><th class="num">cache 1h</th></tr></thead>
         <tbody>
@@ -37,8 +37,8 @@ export default async function (root) {
 
       <hr class="divider">
 
-      <h3>Privacy</h3>
-      <p class="muted">Press <code>Cmd/Ctrl + B</code> anywhere to blur prompt text and other sensitive content for screenshots.</p>
+      <h3>PRIVACY</h3>
+      <p class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:0.04em">PRESS <code>CMD/CTRL + B</code> ANYWHERE TO BLUR PROMPT TEXT AND OTHER SENSITIVE CONTENT FOR SCREENSHOTS.</p>
     </div>`;
 
   $('#save').addEventListener('click', async () => {

@@ -45,13 +45,13 @@ function buildTopbar() {
   const wrap = document.createElement('header');
   wrap.className = 'topbar';
   wrap.innerHTML = `
-    <div class="brand">Token Dashboard</div>
+    <div class="brand">TOKEN DASHBOARD</div>
     <nav>
-      ${Object.keys(ROUTES).map(p => `<a href="#${p}" data-route="${p}">${p.slice(1)}</a>`).join('')}
+      ${Object.keys(ROUTES).map(p => `<a href="#${p}" data-route="${p}">${p.slice(1).toUpperCase()}</a>`).join('')}
     </nav>
     <div class="spacer"></div>
-    <span class="pill" id="plan-pill">api</span>
-    <span class="pill muted" title="Cmd/Ctrl+B blurs sensitive text">⌘B blur</span>
+    <span class="pill" id="plan-pill">API</span>
+    <span class="pill muted" title="Cmd/Ctrl+B blurs sensitive text">⌘B BLUR</span>
   `;
   document.body.prepend(wrap);
 }
@@ -83,8 +83,8 @@ async function firstRun() {
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <div class="modal">
-      <h2>Welcome — pick your plan</h2>
-      <p>This sets how costs are displayed. Change it later in Settings.</p>
+      <h2>WELCOME — PICK YOUR PLAN</h2>
+      <p>THIS SETS HOW COSTS ARE DISPLAYED. CHANGE IT LATER IN SETTINGS.</p>
       <select id="firstplan" style="width:100%">
         ${plans.map(([k,v]) => `<option value="${k}">${v.label}${v.monthly ? ` — $${v.monthly}/mo` : ''}</option>`).join('')}
       </select>
