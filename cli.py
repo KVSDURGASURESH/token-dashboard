@@ -13,12 +13,12 @@ from token_dashboard.tips import all_tips
 
 
 def _db_path(args) -> str:
-    return args.db or os.environ.get("TOKEN_DASHBOARD_DB") or str(default_db_path())
+    return getattr(args, "db", None) or os.environ.get("TOKEN_DASHBOARD_DB") or str(default_db_path())
 
 
 def _projects(args) -> str:
     return (
-        args.projects_dir
+        getattr(args, "projects_dir", None)
         or os.environ.get("CLAUDE_PROJECTS_DIR")
         or str(Path.home() / ".claude" / "projects")
     )
@@ -73,8 +73,6 @@ def cmd_tips(args):
 def cmd_dashboard(args):
     db = _db_path(args)
     init_db(db)
-    if not args.no_scan:
-        scan_dir(_projects(args), db)
     from token_dashboard.server import run
 
     host = os.environ.get("HOST", "127.0.0.1")
@@ -83,13 +81,24 @@ def cmd_dashboard(args):
     if not args.no_open:
         webbrowser.open(url)
     print(f"Token Dashboard listening on {url}")
-    run(host, port, db, _projects(args))
+    # Scanning happens on a background thread inside run() so the server
+    # starts accepting connections immediately, instead of blocking behind
+    # a full scan of potentially years of session history. The frontend
+    # renders progressively as scan results arrive via the SSE stream.
+    run(host, port, db, _projects(args), scan=not args.no_scan)
 
 
 def main():
+    # default=SUPPRESS on both: if --db/--projects-dir aren't given at a
+    # given parser level, that level leaves the attribute alone entirely
+    # instead of resetting it to None — otherwise a subparser inheriting
+    # these via `parents=[common]` silently clobbers a value already set
+    # by the top-level parser (e.g. `token-dashboard --db X dashboard`
+    # would lose X). _db_path/_projects use getattr(..., None) for the
+    # case where neither level ever set the attribute at all.
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--db", help="SQLite path (default ~/.claude/token-dashboard.db)")
-    common.add_argument("--projects-dir", help="JSONL root (default ~/.claude/projects)")
+    common.add_argument("--db", default=argparse.SUPPRESS, help="SQLite path (default ~/.claude/token-dashboard.db)")
+    common.add_argument("--projects-dir", default=argparse.SUPPRESS, help="JSONL root (default ~/.claude/projects)")
 
     p = argparse.ArgumentParser(prog="token-dashboard", description="Local Claude Code usage dashboard", parents=[common])
     sub = p.add_subparsers(dest="cmd", required=True)
