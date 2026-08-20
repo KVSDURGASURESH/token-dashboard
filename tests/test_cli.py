@@ -43,6 +43,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("no suggestions", r.stdout)
 
+    def test_recommend_runs_without_data(self):
+        r = self._run("recommend")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("no recommendations", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

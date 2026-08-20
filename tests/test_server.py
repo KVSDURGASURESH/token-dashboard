@@ -62,6 +62,10 @@ class ServerTests(unittest.TestCase):
         body = json.loads(self._get("/api/profile"))
         self.assertIn("insufficient_data", body)
 
+    def test_recommendations_json(self):
+        body = json.loads(self._get("/api/recommendations"))
+        self.assertIn("markdown", body)
+
     def test_plan_json(self):
         body = json.loads(self._get("/api/plan"))
         self.assertIn("plan", body)

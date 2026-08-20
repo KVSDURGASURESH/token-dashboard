@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from token_dashboard.db import init_db, default_db_path, overview_totals
+from token_dashboard.recommendations import build_recommendations_markdown
 from token_dashboard.scanner import scan_dir
 from token_dashboard.tips import all_tips
 
@@ -70,6 +71,17 @@ def cmd_tips(args):
         print(f"  {tip['body']}\n")
 
 
+def cmd_recommend(args):
+    db = _db_path(args)
+    init_db(db)
+    md = build_recommendations_markdown(db)
+    if not md:
+        print("Token Dashboard: no recommendations right now — nothing crossed a threshold.")
+        return
+    print(md)
+    print("Draft only — review it, then merge whatever you agree with into ~/.claude/CLAUDE.md yourself. Nothing was written automatically.")
+
+
 def cmd_dashboard(args):
     db = _db_path(args)
     init_db(db)
@@ -106,6 +118,7 @@ def main():
     sub.add_parser("today", parents=[common]).set_defaults(func=cmd_today)
     sub.add_parser("stats", parents=[common]).set_defaults(func=cmd_stats)
     sub.add_parser("tips",  parents=[common]).set_defaults(func=cmd_tips)
+    sub.add_parser("recommend", parents=[common]).set_defaults(func=cmd_recommend)
     d = sub.add_parser("dashboard", parents=[common])
     d.add_argument("--no-scan", action="store_true")
     d.add_argument("--no-open", action="store_true")
