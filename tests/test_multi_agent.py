@@ -205,3 +205,69 @@ class SourceConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HermesTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        self.tmp = Path(tempfile.mkdtemp())
+        self.db = str(self.tmp / "t.db")
+        init_db(self.db)
+        self.home = self.tmp / "hermes"
+        (self.home / "profiles" / "builder").mkdir(parents=True)
+        for path, model, i, o, cr in ((self.home / "state.db", "ojas-qwen", 1000, 100, 5000),
+                                      (self.home / "profiles" / "builder" / "state.db", "claude-sonnet-5", 10, 50, 900)):
+            c = sqlite3.connect(path)
+            c.executescript("""
+              CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, started_at REAL, ended_at REAL,
+                message_count INT, input_tokens INT, output_tokens INT, cache_read_tokens INT, cache_write_tokens INT,
+                api_call_count INT, cwd TEXT, git_branch TEXT);
+              CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT,
+                tool_calls TEXT, tool_name TEXT, tool_call_id TEXT, timestamp REAL);""")
+            sid = "2026_s1_" + model[:4]
+            c.execute("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (sid, "cli", model, 1.79e9, 1.79e9 + 10, 5, i, o, cr, 0, 3, "/Users/x/proj", "main"))
+            call = [{"id": "c1", "function": {"name": "terminal", "arguments": json.dumps({"command": "ls"})}}]
+            for n, (role, content, tc) in enumerate([("user", "hello there", None), ("assistant", None, json.dumps(call)),
+                                                     ("tool", json.dumps({"exit_code": 1, "output": "x" * 80}), None),
+                                                     ("assistant", "done", None), ("assistant", "bye", None)]):
+                c.execute("INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, timestamp) VALUES (?,?,?,?,?,?)",
+                          (sid, role, content, tc, "c1" if role == "tool" else None, 1.79e9 + n))
+            c.commit()
+            c.close()
+        self.opts = {"model_alias": {"ojas-qwen": "qwen3.5"}}
+
+    def test_totals_exact_alias_and_profiles(self):
+        from token_dashboard.scanner import scan_hermes
+        scan_hermes("hermes", self.home, self.db, self.opts)
+        t = overview_totals(self.db, source="hermes")
+        self.assertEqual((t["input_tokens"], t["output_tokens"], t["cache_read_tokens"]), (1010, 150, 5900))  # exact, incl. remainder split
+        self.assertEqual(t["sessions"], 2)  # main DB + builder profile DB
+        models = {m["model"]: m for m in model_breakdown(self.db, source="hermes")}
+        self.assertEqual(set(models), {"qwen3.5", "claude-sonnet-5"})
+        self.assertEqual(models["qwen3.5"]["turns"], 3)
+        with connect(self.db) as c:
+            self.assertEqual(c.execute("SELECT DISTINCT agent_id FROM messages WHERE agent_id IS NOT NULL").fetchone()[0], "builder")
+            tools = {(r["tool_name"], r["is_error"]) for r in c.execute("SELECT * FROM tool_calls")}
+        self.assertIn(("Bash", 0), tools)
+        self.assertIn(("_tool_result", 1), tools)  # exit_code 1 -> error
+
+    def test_rescan_unchanged_is_noop_and_changed_session_replaced(self):
+        import sqlite3
+        from token_dashboard.scanner import scan_hermes
+        scan_hermes("hermes", self.home, self.db, self.opts)
+        self.assertEqual(scan_hermes("hermes", self.home, self.db, self.opts)["messages"], 0)
+        c = sqlite3.connect(self.home / "state.db")
+        c.execute("UPDATE sessions SET output_tokens = 400, message_count = 6"); c.commit(); c.close()
+        scan_hermes("hermes", self.home, self.db, self.opts)
+        self.assertEqual(overview_totals(self.db, source="hermes")["output_tokens"], 450)  # replaced, not added
+        with connect(self.db) as c:
+            n = c.execute("SELECT COUNT(*) FROM messages WHERE type='user'").fetchone()[0]
+        self.assertEqual(n, 2)  # no duplicate prompt rows
+
+    def test_alias_change_reingests(self):
+        from token_dashboard.scanner import scan_hermes
+        scan_hermes("hermes", self.home, self.db, {})
+        self.assertIn("ojas-qwen", {m["model"] for m in model_breakdown(self.db)})
+        scan_hermes("hermes", self.home, self.db, self.opts)
+        self.assertNotIn("ojas-qwen", {m["model"] for m in model_breakdown(self.db)})

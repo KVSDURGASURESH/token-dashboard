@@ -1,4 +1,4 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, agentBadge } from '/web/app.js';
 
 export default async function (root) {
   const id = decodeURIComponent(location.hash.split('/')[2] || '');
@@ -17,7 +17,7 @@ async function renderList(root) {
           ${list.map(s => `
             <tr>
               <td class="mono">${fmt.ts(s.started)}</td>
-              <td><span class="badge">${fmt.htmlSafe((s.source || 'claude').toUpperCase())}</span></td>
+              <td>${agentBadge(s.source)}</td>
               <td title="${fmt.htmlSafe(s.project_slug)}">${fmt.htmlSafe(s.project_name || s.project_slug)}</td>
               <td class="num">${fmt.int(s.turns)}</td>
               <td class="num">${fmt.int(s.tokens)}</td>
@@ -55,6 +55,7 @@ async function renderSession(root, id) {
         <a href="#/sessions" class="muted">← all sessions</a>
       </h2>
       <div class="flex muted" style="font-family:var(--mono);font-size:12px;flex-wrap:wrap;gap:14px">
+        ${agentBadge((turns[0] || {}).source)}
         <span>${fmt.htmlSafe(project)}</span>
         <span>${fmt.ts(started)} → ${fmt.ts(ended)}</span>
         <span>${turns.length} records</span>

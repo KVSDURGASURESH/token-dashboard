@@ -39,6 +39,26 @@ export async function api(path, opts) {
 
 export const state = { plan: 'api', pricing: null };
 
+// One colour per agent, used for badges and chart series so a harness looks the same everywhere.
+const AGENT_COLORS = { claude: '#E8B038', codex: '#10B981', hermes: '#A855F7' };
+const AGENT_FALLBACK = ['#4A9EFF', '#F472B6', '#FB923C', '#22D3EE'];
+export function agentColor(name) {
+  if (AGENT_COLORS[name]) return AGENT_COLORS[name];
+  let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return AGENT_FALLBACK[h % AGENT_FALLBACK.length];
+}
+export const agentBadge = (name, extra = '') =>
+  `<span class="badge agent" style="--agent:${agentColor(name)}">${fmt.htmlSafe(String(name || 'claude').toUpperCase())}${extra ? ' ' + extra : ''}</span>`;
+// Badges for a by_agent map {agent: count}: which harnesses used this skill/tool/model/project, and how much.
+export const agentBadges = (byAgent, f = fmt.compact) =>
+  Object.entries(byAgent || {}).sort((a, b) => b[1] - a[1])
+    .map(([a, n]) => agentBadge(a, `<b>${f(n)}</b>`)).join(' ');
+// Stacked-chart series, one per agent, over rows that carry by_agent.
+export function seriesByAgent(rows) {
+  const agents = [...new Set(rows.flatMap(r => Object.keys(r.by_agent || {})))];
+  return agents.map(a => ({ name: a.toUpperCase(), color: agentColor(a), values: rows.map(r => (r.by_agent || {})[a] || 0) }));
+}
+
 // Query params ride along inside the hash, e.g. #/overview?range=7d.
 export function readHashParam(name) {
   return new URLSearchParams(location.hash.split('?')[1] || '').get(name);

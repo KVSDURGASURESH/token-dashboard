@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -26,8 +28,8 @@ INSERT OR REPLACE INTO messages (
 """
 
 INSERT_TOOL = """
-INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp)
-VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp)
+INSERT INTO tool_calls (message_uuid, session_id, project_slug, tool_name, target, result_tokens, is_error, timestamp, source)
+VALUES (:message_uuid, :session_id, :project_slug, :tool_name, :target, :result_tokens, :is_error, :timestamp, :source)
 """
 
 
@@ -161,6 +163,7 @@ def parse_record(rec: dict, project_slug: str, source: str = "claude") -> Tuple[
         t["message_uuid"] = msg["uuid"]
         t["session_id"]   = msg["session_id"]
         t["project_slug"] = project_slug
+        t["source"]       = source
     return msg, tools
 
 
@@ -430,7 +433,7 @@ def scan_codex_file(path: Path, root: Path, conn, start_byte: int = 0,
                     conn.execute(INSERT_TOOL, {
                         "message_uuid": key, "session_id": sid, "project_slug": slug(),
                         "tool_name": cls, "target": tgt, "result_tokens": None,
-                        "is_error": 0, "timestamp": ts})
+                        "is_error": 0, "timestamp": ts, "source": source})
                     pending.append({"name": cls, "target": tgt})
                     tools += 1
             elif pt in ("function_call_output", "custom_tool_call_output"):
@@ -438,7 +441,7 @@ def scan_codex_file(path: Path, root: Path, conn, start_byte: int = 0,
                 conn.execute(INSERT_TOOL, {
                     "message_uuid": key, "session_id": sid, "project_slug": slug(),
                     "tool_name": "_tool_result", "target": p.get("call_id"),
-                    "result_tokens": toks, "is_error": err, "timestamp": ts})
+                    "result_tokens": toks, "is_error": err, "timestamp": ts, "source": source})
                 tools += 1
         elif t == "event_msg" and ts and p.get("type") == "token_count":
             info = p.get("info") or {}
@@ -501,7 +504,7 @@ def scan_generic_file(path: Path, root: Path, conn, start_byte: int = 0,
         for n in names:
             conn.execute(INSERT_TOOL, {
                 "message_uuid": key, "session_id": sid, "project_slug": slug, "tool_name": n,
-                "target": None, "result_tokens": None, "is_error": 0, "timestamp": ts})
+                "target": None, "result_tokens": None, "is_error": 0, "timestamp": ts, "source": source})
             tools += 1
     return {"messages": msgs, "tools": tools, "end_offset": end, "state": state or {}}
 
@@ -512,18 +515,171 @@ def _scan_claude_file(path, root, conn, start_byte=0, state=None, source="claude
     return sub
 
 
+# ---------------------------------------------------------------------------
+# Hermes (SQLite, not JSONL): ~/.hermes/state.db plus one state.db per profile.
+# ---------------------------------------------------------------------------
+
+HERMES_TOOL_CLASS = {
+    "terminal": "Bash", "read_file": "Read", "write_file": "Write", "patch": "Edit",
+    "search_files": "Grep", "skill_view": "Skill", "delegate_task": "Task",
+    "web_search": "WebSearch", "web_extract": "WebFetch",
+}
+_HERMES_TARGET_KEYS = ("command", "path", "file_path", "pattern", "name", "query", "url", "goal", "task")
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _hermes_dbs(root: Path) -> List[Tuple[str, Path]]:
+    """[(label, db_path)]: the main DB is 'main', profile DBs are named by profile."""
+    if root.is_file():
+        return [("main", root)]
+    out = [("main", root / "state.db")] if (root / "state.db").is_file() else []
+    out += [(d.name, d / "state.db") for d in sorted((root / "profiles").glob("*")) if (d / "state.db").is_file()]
+    return out
+
+
+def _hermes_tool_calls(raw: Optional[str]) -> List[Tuple[str, Optional[str]]]:
+    try:
+        calls = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    out = []
+    for c in calls if isinstance(calls, list) else []:
+        fn = (c or {}).get("function") or {}
+        name = fn.get("name") or "unknown"
+        target = None
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except ValueError:
+            args = {}
+        if isinstance(args, dict):
+            for k in _HERMES_TARGET_KEYS:
+                if isinstance(args.get(k), str):
+                    target = args[k][:500]
+                    break
+        out.append((HERMES_TOOL_CLASS.get(name, name), target))
+    return out
+
+
+def _hermes_result(content: Optional[str]) -> Tuple[int, int]:
+    body = content or ""
+    err = 0
+    try:
+        j = json.loads(body)
+        if isinstance(j, dict):
+            err = int(j.get("status") == "error" or bool(j.get("error")) or j.get("exit_code") not in (None, 0))
+    except ValueError:
+        pass
+    return len(body) // 4, err
+
+
+def _ingest_hermes_session(conn, label, ses, msgs, alias, name) -> Tuple[int, int]:
+    """Write one session. Hermes keeps only per-session token totals (no per-call
+    usage), so the totals are split evenly across the session's assistant turns:
+    session sums are exact, per-turn and per-day figures are an approximation."""
+    sid = f"{name}:{label}:{ses['id']}"
+    cwd = ses["cwd"]
+    slug = _encode_slug(cwd) if cwd else f"{name}-unknown"
+    model = alias.get(ses["model"], ses["model"])
+    common = dict(session_id=ses["id"], project_slug=slug, cwd=cwd, git_branch=ses["git_branch"],
+                  entrypoint=ses["source"], agent_id=None if label == "main" else label)
+    asst = [m for m in msgs if m["role"] == "assistant"]
+    totals = {"input_tokens": ses["input_tokens"] or 0, "output_tokens": ses["output_tokens"] or 0,
+              "cache_read_tokens": ses["cache_read_tokens"] or 0,
+              "cache_create_5m_tokens": ses["cache_write_tokens"] or 0}
+    n = max(len(asst), 1) if any(totals.values()) else len(asst)
+    nmsg = ntool = 0
+    last_user, seen_asst = None, 0
+    ordered = list(msgs)
+    if not asst and any(totals.values()):  # tokens but no recorded assistant message
+        ordered.append({"id": 0, "role": "assistant", "content": None, "tool_calls": None,
+                        "tool_name": None, "tool_call_id": None, "timestamp": ses["started_at"]})
+    for m in ordered:
+        key, ts = f"{sid}:{m['id']}", _iso(m["timestamp"])
+        if m["role"] == "user" and isinstance(m["content"], str) and m["content"].strip():
+            conn.execute(INSERT_MSG, _blank_msg(name, uuid=key, timestamp=ts, type="user", **{
+                **common, "prompt_text": m["content"], "prompt_chars": len(m["content"])}))
+            last_user, nmsg = key, nmsg + 1
+        elif m["role"] == "assistant":
+            seen_asst += 1
+            part = {k: v // n + (v % n if seen_asst == n else 0) for k, v in totals.items()}
+            calls = _hermes_tool_calls(m["tool_calls"])
+            conn.execute(INSERT_MSG, _blank_msg(name, uuid=key, parent_uuid=last_user, timestamp=ts, model=model,
+                         tool_calls_json=json.dumps([{"name": c, "target": t} for c, t in calls]) if calls else None,
+                         **{**common, **part}))
+            nmsg += 1
+            for cls, tgt in calls:
+                conn.execute(INSERT_TOOL, {"message_uuid": key, "session_id": ses["id"], "project_slug": slug,
+                             "tool_name": cls, "target": tgt, "result_tokens": None, "is_error": 0,
+                             "timestamp": ts, "source": name})
+                ntool += 1
+        elif m["role"] == "tool":
+            toks, err = _hermes_result(m["content"])
+            conn.execute(INSERT_TOOL, {"message_uuid": key, "session_id": ses["id"], "project_slug": slug,
+                         "tool_name": "_tool_result", "target": m["tool_call_id"], "result_tokens": toks,
+                         "is_error": err, "timestamp": ts, "source": name})
+            ntool += 1
+    return nmsg, ntool
+
+
+def scan_hermes(name: str, root: Union[str, Path], db_path: Union[str, Path], options: Optional[dict] = None) -> dict:
+    """Ingest Hermes sessions. A session is re-ingested whenever its totals or
+    message count change (its old rows are replaced), so live sessions stay current."""
+    totals = {"messages": 0, "tools": 0, "files": 0}
+    alias = dict((options or {}).get("model_alias") or {})
+    alias_sig = json.dumps(alias, sort_keys=True)
+    with connect(db_path) as conn:
+        for label, dbp in _hermes_dbs(Path(root).expanduser()):
+            try:
+                ro = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=5)
+                ro.row_factory = sqlite3.Row
+                sessions = ro.execute("SELECT * FROM sessions").fetchall()
+            except sqlite3.Error:
+                continue  # locked or mid-migration: pick it up next scan
+            row = conn.execute("SELECT state FROM files WHERE path=?", (str(dbp),)).fetchone()
+            prev = json.loads(row["state"]) if row and row["state"] else {}
+            sigs = prev.get("sigs", {}) if prev.get("alias") == alias_sig else {}
+            new_sigs = {}
+            for ses in sessions:
+                sig = [ses["message_count"], ses["input_tokens"], ses["output_tokens"],
+                       ses["cache_read_tokens"], ses["ended_at"], ses["api_call_count"]]
+                new_sigs[ses["id"]] = sig
+                if sigs.get(ses["id"]) == sig:
+                    continue
+                prefix = f"{name}:{label}:{ses['id']}:"
+                conn.execute("DELETE FROM tool_calls WHERE message_uuid LIKE ? ESCAPE '\\'", (prefix.replace("_", "\\_") + "%",))
+                conn.execute("DELETE FROM messages WHERE uuid LIKE ? ESCAPE '\\'", (prefix.replace("_", "\\_") + "%",))
+                msgs = ro.execute("SELECT id, role, content, tool_calls, tool_name, tool_call_id, timestamp "
+                                  "FROM messages WHERE session_id=? ORDER BY timestamp, id", (ses["id"],)).fetchall()
+                m, t = _ingest_hermes_session(conn, label, ses, [dict(x) for x in msgs], alias, name)
+                totals["messages"] += m
+                totals["tools"] += t
+            ro.close()
+            conn.execute("INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at, state) VALUES (?,?,?,?,?)",
+                         (str(dbp), dbp.stat().st_mtime, 0, time.time(), json.dumps({"sigs": new_sigs, "alias": alias_sig})))
+            conn.commit()
+            totals["files"] += 1
+    return totals
+
+
 # kind -> (parser, glob). New agents are one entry here plus a parser above.
 KINDS = {
+    "hermes":  (None,               None),   # SQLite; handled by scan_hermes
     "claude":  (_scan_claude_file,  "*.jsonl"),
     "codex":   (scan_codex_file,    "*.jsonl"),
     "generic": (scan_generic_file,  "*.jsonl"),
 }
 
 
-def scan_source(name: str, kind: str, root: Union[str, Path], db_path: Union[str, Path]) -> dict:
+def scan_source(name: str, kind: str, root: Union[str, Path], db_path: Union[str, Path],
+                options: Optional[dict] = None) -> dict:
     totals = {"messages": 0, "tools": 0, "files": 0}
     if kind not in KINDS:
         raise ValueError(f"unknown source kind {kind!r}; expected one of {sorted(KINDS)}")
+    if kind == "hermes":
+        return scan_hermes(name, root, db_path, options)
     parser, _ = KINDS[kind]
     root = Path(root).expanduser()
     if root.is_file():
@@ -571,7 +727,7 @@ def scan_sources(sources, db_path: Union[str, Path]) -> dict:
     """Scan every configured source; sources = [{"name","kind","path"}, ...]."""
     totals = {"messages": 0, "tools": 0, "files": 0}
     for s in sources:
-        n = scan_source(s["name"], s["kind"], s["path"], db_path)
+        n = scan_source(s["name"], s["kind"], s["path"], db_path, s.get("options"))
         for k in totals:
             totals[k] += n[k]
     return totals

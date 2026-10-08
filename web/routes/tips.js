@@ -1,4 +1,4 @@
-import { api, fmt } from '/web/app.js';
+import { api, fmt, agentBadge } from '/web/app.js';
 
 export default async function (root) {
   const [tips, rec] = await Promise.all([
@@ -14,6 +14,7 @@ export default async function (root) {
       ${tips.map(t => `
         <div class="tip">
           <div class="tip-head">
+            ${agentBadge(t.source)}
             <span class="badge">${fmt.htmlSafe(t.category)}</span>
             <strong>${fmt.htmlSafe(t.title)}</strong>
             <span class="spacer"></span>

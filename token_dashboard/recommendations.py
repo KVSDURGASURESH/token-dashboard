@@ -17,8 +17,8 @@ from .tips import all_tips
 HEADER = "## From TOKEN DASHBOARD — draft harness recommendations"
 
 INTRO = (
-    "Generated from rule-based patterns in your own Claude Code session "
-    "history. Review before merging into ~/.claude/CLAUDE.md — nothing "
+    "Generated from rule-based patterns in your own agent session "
+    "history. Review before merging into ~/.claude/CLAUDE.md (or the matching agent's AGENTS.md) — nothing "
     "here is applied automatically."
 )
 
@@ -29,7 +29,8 @@ def build_recommendations_markdown(db_path, today_iso: Optional[str] = None, sou
         return ""
     lines = [HEADER, "", INTRO, ""]
     for tip in tips:
-        lines.append(f"- **{tip['title']}**")
+        agent = f" _({tip['source']})_" if tip.get("source") else ""
+        lines.append(f"- **{tip['title']}**{agent}")
         lines.append(f"  {tip['body']}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

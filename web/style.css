@@ -681,3 +681,13 @@ hr.divider {
   background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
   box-shadow: 0 0 8px var(--accent-glow);
 }
+
+
+/* Agent badges: colour comes from --agent (set per agent in app.js) */
+.badge.agent {
+  color: var(--agent);
+  border-color: color-mix(in srgb, var(--agent) 40%, transparent);
+  background: color-mix(in srgb, var(--agent) 10%, transparent);
+  white-space: nowrap;
+}
+.badge.agent b { font-weight: 800; margin-left: 2px; }

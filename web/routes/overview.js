@@ -1,5 +1,5 @@
-import { api, fmt, state } from '/web/app.js';
-import { barChart, donutChart, groupedBarChart, stackedBarChart } from '/web/charts.js';
+import { api, fmt, state, agentBadge, agentBadges, seriesByAgent } from '/web/app.js';
+import { donutChart, groupedBarChart, stackedBarChart } from '/web/charts.js';
 import { bindRangeTabs, rangeTabs, readRange, sinceIso, withSince } from '/web/range.js';
 
 export default async function (root) {
@@ -55,12 +55,24 @@ export default async function (root) {
       <table>
         <thead><tr><th>Agent</th><th>Sessions</th><th>Turns</th><th>Input</th><th>Output</th><th>Cache read</th><th>Est. cost</th></tr></thead>
         <tbody>${bySource.map(r => `
-          <tr><td>${fmt.htmlSafe(r.source.toUpperCase())}</td><td>${fmt.int(r.sessions)}</td><td>${fmt.int(r.turns)}</td>
+          <tr><td>${agentBadge(r.source)}</td><td>${fmt.int(r.sessions)}</td><td>${fmt.int(r.turns)}</td>
           <td>${fmt.compact(r.input_tokens)}</td><td>${fmt.compact(r.output_tokens)}</td><td>${fmt.compact(r.cache_read_tokens)}</td>
           <td title="${r.unpriced_models ? r.unpriced_models + ' model(s) unpriced' : ''}">${fmt.usd(r.cost_usd)}${r.unpriced_models && r.cost_usd != null ? ' +' : ''}</td></tr>`).join('')}
         </tbody>
       </table>
     </div>` : ''}
+
+    <div class="card" style="margin-top:16px">
+      <h3>MODELS — WHICH AGENT RAN THEM</h3>
+      <table>
+        <thead><tr><th>Model</th><th>Agent (turns)</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache read</th><th class="num">Est. cost</th></tr></thead>
+        <tbody>${byModel.slice(0, 12).map(m => `
+          <tr><td>${fmt.htmlSafe(m.model)}</td><td>${agentBadges(m.by_agent, fmt.int)}</td>
+          <td class="num">${fmt.compact(m.input_tokens)}</td><td class="num">${fmt.compact(m.output_tokens)}</td>
+          <td class="num">${fmt.compact(m.cache_read_tokens)}</td><td class="num">${fmt.usd(m.cost_usd)}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
 
     <details class="card glossary" style="margin-top:16px">
       <summary><h3 style="display:inline-block;margin:0">WHAT DO THESE NUMBERS MEAN?</h3><span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em">— CLICK TO EXPAND</span></summary>
@@ -98,18 +110,19 @@ export default async function (root) {
     </div>
 
     <div class="row cols-2" style="margin-top:16px">
-      <div class="card"><h3>TOP TOOLS (BY CALL COUNT)</h3><div id="ch-tools" style="height:320px"></div></div>
+      <div class="card"><h3>TOP TOOLS (BY CALL COUNT, SPLIT BY AGENT)</h3><div id="ch-tools" style="height:320px"></div></div>
       <div class="card">
         <h3 style="display:flex;align-items:center"><span>RECENT SESSIONS</span><span class="spacer"></span><a href="#/sessions" style="font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:0.08em">ALL →</a></h3>
         <table>
-          <thead><tr><th>started</th><th>project</th><th class="num">tokens</th></tr></thead>
+          <thead><tr><th>started</th><th>agent</th><th>project</th><th class="num">tokens</th></tr></thead>
           <tbody>
             ${sessions.map(s => `
               <tr>
                 <td class="mono">${fmt.ts(s.started)}</td>
+                <td>${agentBadge(s.source)}</td>
                 <td><a href="#/sessions/${encodeURIComponent(s.session_id)}">${fmt.htmlSafe(s.project_name || s.project_slug)}</a></td>
                 <td class="num">${fmt.compact(s.tokens)}</td>
-              </tr>`).join('') || '<tr><td colspan="3" class="muted">no sessions in this range</td></tr>'}
+              </tr>`).join('') || '<tr><td colspan="4" class="muted">no sessions in this range</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -160,10 +173,9 @@ export default async function (root) {
 
   // top tools
   const topTools = tools.slice(0, 8);
-  barChart(document.getElementById('ch-tools'), {
+  stackedBarChart(document.getElementById('ch-tools'), {
     categories: topTools.map(t => t.tool_name),
-    values: topTools.map(t => t.calls),
-    color: '#7C5CFF',
+    series: seriesByAgent(topTools),
   });
 }
 

@@ -2,7 +2,8 @@
 
 Claude Code (~/.claude/projects) is always a source. Others come from, in
 order: a JSON config file, then repeatable ``--source name=kind:path`` flags.
-Kinds: ``claude``, ``codex``, ``generic`` (see scanner.KINDS).
+Kinds: ``claude``, ``codex``, ``hermes``, ``generic`` (see scanner.KINDS).
+A config entry may add ``"model_alias": {"ojas-qwen": "qwen3.5"}`` (hermes) to rename gateway aliases.
 """
 from __future__ import annotations
 
@@ -42,7 +43,8 @@ def load_config(path: Optional[Path] = None) -> List[dict]:
     for e in json.loads(path.read_text(encoding="utf-8")):
         if e.get("kind") not in KINDS or not e.get("name") or not e.get("path"):
             raise ValueError(f"{path}: each entry needs name, kind ({sorted(KINDS)}), path; got {e!r}")
-        out.append({"name": e["name"], "kind": e["kind"], "path": e["path"]})
+        out.append({"name": e["name"], "kind": e["kind"], "path": e["path"],
+                    **({"options": {"model_alias": e["model_alias"]}} if e.get("model_alias") else {})})
     return out
 
 

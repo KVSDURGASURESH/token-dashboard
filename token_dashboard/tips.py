@@ -186,10 +186,30 @@ def outlier_tips(db_path, today_iso: Optional[str] = None, source=None) -> List[
     return out
 
 
-def all_tips(db_path, today_iso: Optional[str] = None, source=None) -> List[dict]:
+def _all_tips_for(db_path, today_iso, source):
     return [
         *cache_discipline_tips(db_path, today_iso, source),
         *repeated_target_tips(db_path, today_iso, source),
         *right_size_tips(db_path, today_iso, source),
         *outlier_tips(db_path, today_iso, source),
     ]
+
+
+def all_tips(db_path, today_iso: Optional[str] = None, source=None) -> List[dict]:
+    """Every tip is tagged with the agent whose sessions produced it. With no
+    agent picked the rules run once per agent (a file re-read by Codex and by
+    Claude are two different habits), and keys get an agent prefix so each can
+    be dismissed on its own."""
+    if source:
+        return [{**t, "source": source} for t in _all_tips_for(db_path, today_iso, source)]
+    with connect(db_path) as c:
+        agents = [r[0] for r in c.execute("SELECT DISTINCT source FROM messages ORDER BY source")]
+    if len(agents) <= 1:
+        return [{**t, "source": (agents or ["claude"])[0]} for t in _all_tips_for(db_path, today_iso, None)]
+    out = []
+    for a in agents:
+        for t in _all_tips_for(db_path, today_iso, a):
+            key = f"{a}:{t['key']}"
+            if not _is_dismissed(db_path, key):
+                out.append({**t, "key": key, "source": a})
+    return out

@@ -60,7 +60,20 @@ Or make it permanent in `~/.claude/token-dashboard-sources.json` (honoured unles
 [{"name": "codex", "kind": "codex", "path": "~/.codex/sessions"}]
 ```
 
-Kinds: `claude`, `codex` (OpenAI Codex CLI/desktop rollouts), `generic` (one JSON object per API call:
+Hermes (SQLite at `~/.hermes/state.db` plus one per profile) is a kind too, with an optional alias for gateway model names:
+
+```json
+{"name": "hermes", "kind": "hermes", "path": "~/.hermes", "model_alias": {"ojas-qwen": "qwen3.5"}}
+```
+
+Hermes records per-session token totals only, so each session's totals are split evenly over its assistant turns:
+session and agent totals are exact, per-turn and per-day figures are an approximation. Databases are opened read-only.
+`pricing.json` prices `qwen3.5` at $0 (local model); change it if yours isn't local.
+
+Every skill, tool, model, project, session, prompt and tip carries an agent badge (colour per agent, with that agent's
+count), tool and skill charts are stacked by agent, and Profile scores each agent separately.
+
+Kinds: `claude`, `codex` (OpenAI Codex CLI/desktop rollouts), `hermes`, `generic` (one JSON object per API call:
 `session_id`, `timestamp`, `model`, `input_tokens` (uncached), `output_tokens`, optional
 `cache_read_tokens`, `cwd`, `prompt`, `tools`). Any agent that can write that line is trackable;
 a new native format is one parser in `scanner.py` plus an entry in `KINDS`.

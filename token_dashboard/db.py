@@ -60,11 +60,13 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   target        TEXT,
   result_tokens INTEGER,
   is_error      INTEGER NOT NULL DEFAULT 0,
-  timestamp     TEXT    NOT NULL
+  timestamp     TEXT    NOT NULL,
+  source        TEXT    NOT NULL DEFAULT 'claude'
 );
 CREATE INDEX IF NOT EXISTS idx_tools_session ON tool_calls(session_id);
 CREATE INDEX IF NOT EXISTS idx_tools_name    ON tool_calls(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tools_target  ON tool_calls(target);
+CREATE INDEX IF NOT EXISTS idx_tools_source  ON tool_calls(source);
 
 CREATE TABLE IF NOT EXISTS plan (
   k TEXT PRIMARY KEY,
@@ -127,6 +129,12 @@ def _migrate_add_source(conn) -> None:
         conn.execute("ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
     if cols("files") and "state" not in cols("files"):
         conn.execute("ALTER TABLE files ADD COLUMN state TEXT")
+    if cols("tool_calls") and "source" not in cols("tool_calls"):
+        conn.execute("ALTER TABLE tool_calls ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
+        # Rows scanned before this column existed belong to whichever agent owns the session.
+        conn.execute("""UPDATE tool_calls SET source = (
+                         SELECT m.source FROM messages m WHERE m.session_id = tool_calls.session_id LIMIT 1)
+                       WHERE session_id IN (SELECT session_id FROM messages WHERE source != 'claude')""")
     conn.commit()
 
 
@@ -144,15 +152,12 @@ def connect(path: Union[str, Path]):
 def _range_clause(since, until, col: str = "timestamp", source=None, tool_table: bool = False):
     """AND-clause for time range plus optional agent ``source`` filter.
 
-    tool_table=True is for queries on tool_calls, which has no source column:
-    the filter goes through the owning session's messages instead.
+    tool_table is kept for callers written when tool_calls had no source
+    column; both tables are filtered on their own `source` now.
     """
     where, args = [], []
     if source:
-        if tool_table:
-            where.append("session_id IN (SELECT session_id FROM messages WHERE source = ?)")
-        else:
-            where.append("source = ?")
+        where.append("source = ?")
         args.append(source)
     if since:
         where.append(f"{col} >= ?"); args.append(since)
@@ -217,6 +222,30 @@ def best_project_name(cwds, slug: str) -> str:
     return project_name_for(cwds[0] if cwds else None, slug)
 
 
+def _fold_agents(rows, key, sums, primary, maxes=()):
+    """Collapse (key, source) rows into one row per key, keeping a by_agent map.
+
+    by_agent[source] is that agent's `primary` figure, so every table can show
+    which harness a skill / tool / model / project came from and how much each did.
+    """
+    out = {}
+    for r in rows:
+        k = r[key]
+        o = out.setdefault(k, {**{key: k}, **{f: 0 for f in sums}, "by_agent": {}})
+        for f in sums:
+            o[f] += r[f] or 0
+        for f in maxes:
+            o[f] = max(filter(None, (o.get(f), r[f])), default=None)
+        for f, v in r.items():
+            if f not in sums and f not in maxes and f not in ("source", key):
+                o.setdefault(f, v)
+        o["by_agent"][r["source"]] = (o["by_agent"].get(r["source"], 0)) + (r[primary] or 0)
+    res = list(out.values())
+    for o in res:
+        o["agents"] = sorted(o["by_agent"], key=lambda a: -o["by_agent"][a])
+    return res
+
+
 def overview_totals(db_path, since=None, until=None, source=None) -> dict:
     rng, args = _range_clause(since, until, source=source)
     sql = f"""
@@ -261,7 +290,7 @@ def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens", source=Non
 def project_summary(db_path, since=None, until=None, source=None) -> list:
     rng, args = _range_clause(since, until, source=source)
     sql = f"""
-      SELECT project_slug,
+      SELECT project_slug, source,
              COUNT(DISTINCT session_id) AS sessions,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
              COALESCE(SUM(input_tokens), 0)  AS input_tokens,
@@ -271,11 +300,13 @@ def project_summary(db_path, since=None, until=None, source=None) -> list:
              SUM(cache_read_tokens) AS cache_read_tokens
         FROM messages m
        WHERE 1=1 {rng}
-       GROUP BY project_slug
-       ORDER BY billable_tokens DESC
+       GROUP BY project_slug, source
     """
     with connect(db_path) as c:
-        rows = [dict(r) for r in c.execute(sql, args)]
+        rows = _fold_agents([dict(r) for r in c.execute(sql, args)], "project_slug",
+                            ("sessions", "turns", "input_tokens", "output_tokens",
+                             "billable_tokens", "cache_read_tokens"), "billable_tokens")
+        rows.sort(key=lambda r: -r["billable_tokens"])
         for r in rows:
             cwds = [row["cwd"] for row in c.execute(
                 "SELECT DISTINCT cwd FROM messages WHERE project_slug=? AND cwd IS NOT NULL",
@@ -288,16 +319,17 @@ def project_summary(db_path, since=None, until=None, source=None) -> list:
 def tool_token_breakdown(db_path, since=None, until=None, source=None) -> list:
     rng, args = _range_clause(since, until, source=source, tool_table=True)
     sql = f"""
-      SELECT tool_name,
+      SELECT tool_name, source,
              COUNT(*) AS calls,
              COALESCE(SUM(result_tokens),0) AS result_tokens
         FROM tool_calls
        WHERE tool_name != '_tool_result' {rng}
-       GROUP BY tool_name
-       ORDER BY calls DESC
+       GROUP BY tool_name, source
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = _fold_agents([dict(r) for r in c.execute(sql, args)], "tool_name",
+                            ("calls", "result_tokens"), "calls")
+    return sorted(rows, key=lambda r: -r["calls"])
 
 
 def recent_sessions(db_path, limit: int = 20, since=None, until=None, source=None) -> list:
@@ -375,24 +407,25 @@ def skill_breakdown(db_path, since=None, until=None, source=None) -> list:
     """
     rng, args = _range_clause(since, until, source=source, tool_table=True)
     sql = f"""
-      SELECT target AS skill,
+      SELECT target AS skill, source,
              COUNT(*) AS invocations,
              COUNT(DISTINCT session_id) AS sessions,
              MAX(timestamp) AS last_used
         FROM tool_calls
        WHERE tool_name = 'Skill' AND target IS NOT NULL AND target != '' {rng}
-       GROUP BY target
-       ORDER BY invocations DESC
+       GROUP BY target, source
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = _fold_agents([dict(r) for r in c.execute(sql, args)], "skill",
+                            ("invocations", "sessions"), "invocations", maxes=("last_used",))
+    return sorted(rows, key=lambda r: -r["invocations"])
 
 
 def model_breakdown(db_path, since=None, until=None, source=None) -> list:
     """Per-model token totals + turn count. Caller computes cost via pricing."""
     rng, args = _range_clause(since, until, source=source)
     sql = f"""
-      SELECT COALESCE(model, 'unknown') AS model,
+      SELECT COALESCE(model, 'unknown') AS model, source,
              COUNT(*) AS turns,
              COALESCE(SUM(input_tokens),0)            AS input_tokens,
              COALESCE(SUM(output_tokens),0)           AS output_tokens,
@@ -401,11 +434,14 @@ def model_breakdown(db_path, since=None, until=None, source=None) -> list:
              COALESCE(SUM(cache_create_1h_tokens),0)  AS cache_create_1h_tokens
         FROM messages
        WHERE type = 'assistant' {rng}
-       GROUP BY model
-       ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
+       GROUP BY model, source
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = _fold_agents([dict(r) for r in c.execute(sql, args)], "model",
+                            ("turns", "input_tokens", "output_tokens", "cache_read_tokens",
+                             "cache_create_5m_tokens", "cache_create_1h_tokens"), "turns")
+    billable = lambda r: r["input_tokens"] + r["output_tokens"] + r["cache_create_5m_tokens"] + r["cache_create_1h_tokens"]
+    return sorted(rows, key=lambda r: -billable(r))
 
 
 def source_breakdown(db_path, since=None, until=None) -> list:

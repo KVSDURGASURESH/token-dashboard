@@ -1,4 +1,4 @@
-import { api, fmt, readHashParam, writeHashParam } from '/web/app.js';
+import { api, fmt, agentBadge, readHashParam, writeHashParam } from '/web/app.js';
 
 const SORTS = [
   { key: 'tokens', label: 'Most tokens' },
@@ -47,7 +47,7 @@ export default async function (root) {
             <tr data-i="${i}" style="cursor:pointer">
               <td class="${sort.key === 'recent' ? 'mono' : 'num mono'}">${sort.key === 'recent' ? fmt.ts(r.timestamp) : fmt.usd4(r.estimated_cost_usd)}</td>
               <td class="blur-sensitive">${fmt.htmlSafe(fmt.short(r.prompt_text, 110))}</td>
-              <td><span class="badge">${fmt.htmlSafe((r.source || 'claude').toUpperCase())}</span></td>
+              <td>${agentBadge(r.source)}</td>
               <td><span class="badge ${fmt.modelClass(r.model)}">${fmt.htmlSafe(fmt.modelShort(r.model))}</span></td>
               <td class="num">${fmt.int(r.billable_tokens)}</td>
               <td class="num">${fmt.int(r.cache_read_tokens)}</td>
