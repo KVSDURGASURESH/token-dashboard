@@ -1,12 +1,14 @@
 """JSONL transcript walker + parser."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
-from .db import connect
+from .db import connect, _encode_slug
 
 
 INSERT_MSG = """
@@ -14,12 +16,12 @@ INSERT OR REPLACE INTO messages (
   uuid, parent_uuid, session_id, project_slug, cwd, git_branch, cc_version, entrypoint,
   type, is_sidechain, agent_id, timestamp, model, stop_reason, prompt_id, message_id,
   input_tokens, output_tokens, cache_read_tokens, cache_create_5m_tokens, cache_create_1h_tokens,
-  prompt_text, prompt_chars, tool_calls_json
+  prompt_text, prompt_chars, tool_calls_json, source
 ) VALUES (
   :uuid, :parent_uuid, :session_id, :project_slug, :cwd, :git_branch, :cc_version, :entrypoint,
   :type, :is_sidechain, :agent_id, :timestamp, :model, :stop_reason, :prompt_id, :message_id,
   :input_tokens, :output_tokens, :cache_read_tokens, :cache_create_5m_tokens, :cache_create_1h_tokens,
-  :prompt_text, :prompt_chars, :tool_calls_json
+  :prompt_text, :prompt_chars, :tool_calls_json, :source
 )
 """
 
@@ -122,7 +124,7 @@ def _extract_results(rec: dict) -> List[dict]:
     return out
 
 
-def parse_record(rec: dict, project_slug: str) -> Tuple[dict, List[dict]]:
+def parse_record(rec: dict, project_slug: str, source: str = "claude") -> Tuple[dict, List[dict]]:
     """Return (message_row, [tool_call_rows])."""
     msg_obj = rec.get("message") or {}
     text, chars = _prompt_text(rec)
@@ -146,6 +148,7 @@ def parse_record(rec: dict, project_slug: str) -> Tuple[dict, List[dict]]:
         "prompt_text":  text,
         "prompt_chars": chars,
         "tool_calls_json": None,
+        "source":       source,
         **_usage(rec),
     }
     tools = _extract_tools(rec)
@@ -184,7 +187,7 @@ def _evict_prior_snapshots(conn, session_id: str, message_id: str, keep_uuid: st
     conn.execute(f"DELETE FROM messages WHERE uuid IN ({placeholders})", old)
 
 
-def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
+def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0, source: str = "claude") -> dict:
     """Ingest new lines from a JSONL file starting at ``start_byte``.
 
     Returns message/tool counts plus ``end_offset`` — the byte offset just
@@ -223,7 +226,7 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
             if not isinstance(rec, dict) or "uuid" not in rec or "type" not in rec:
                 end_offset = line_end
                 continue
-            msg, tlist = parse_record(rec, project_slug)
+            msg, tlist = parse_record(rec, project_slug, source)
             if not msg["session_id"] or not msg["timestamp"]:
                 end_offset = line_end
                 continue
@@ -242,36 +245,333 @@ def scan_file(path: Path, project_slug: str, conn, start_byte: int = 0) -> dict:
     return {"messages": msgs, "tools": tools, "end_offset": end_offset}
 
 
-def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
-    root = Path(projects_root)
+# ---------------------------------------------------------------------------
+# Other agents. Every parser turns its native log into the same `messages` /
+# `tool_calls` rows, tagged with `source`, so the dashboard can show Claude
+# Code, Codex and anything else in one place.
+# ---------------------------------------------------------------------------
+
+def _iter_lines(path: Path, start_byte: int):
+    """Yield (line_start, line_end, record|None) for each complete line.
+
+    Same high-water-mark contract as scan_file: a partial trailing line is
+    left unread so it is re-read once the writer finishes it.
+    """
+    with open(path, "rb") as fb:
+        if start_byte:
+            fb.seek(start_byte)
+        while True:
+            line_start = fb.tell()
+            raw = fb.readline()
+            if not raw or not raw.endswith(b"\n"):
+                return
+            try:
+                rec = json.loads(raw.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                rec = None
+            yield line_start, fb.tell(), (rec if isinstance(rec, dict) else None)
+
+
+def _blank_msg(source: str, **kw) -> dict:
+    row = {
+        "uuid": None, "parent_uuid": None, "session_id": None, "project_slug": "",
+        "cwd": None, "git_branch": None, "cc_version": None, "entrypoint": None,
+        "type": "assistant", "is_sidechain": 0, "agent_id": None, "timestamp": None,
+        "model": None, "stop_reason": None, "prompt_id": None, "message_id": None,
+        "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
+        "cache_create_5m_tokens": 0, "cache_create_1h_tokens": 0,
+        "prompt_text": None, "prompt_chars": None, "tool_calls_json": None,
+        "source": source,
+    }
+    row.update(kw)
+    return row
+
+
+_UUID_TAIL = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+
+
+def _codex_target(args_json: str) -> Optional[str]:
+    try:
+        a = json.loads(args_json)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(a, dict):
+        for k in ("cmd", "command", "path", "file_path", "pattern", "query", "url", "task_name"):
+            v = a.get(k)
+            if isinstance(v, list):
+                v = " ".join(str(x) for x in v)
+            if isinstance(v, str):
+                return v[:500]
+    return None
+
+
+_JS_TOOL = re.compile(r"tools\.([A-Za-z0-9_]+)\(")
+_JS_CMD = re.compile(r'"cmd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_PATCH_FILE = re.compile(r"\*\*\* (?:Update|Add|Delete) File: ([^\n\\\"]+)")
+_SKILL_MD = re.compile(r"skills/([^/\s\"']+)/SKILL\.md")
+_EXIT_CODE = re.compile(r"(?:Process exited with code|exit code|exited with code)[: ]+(-?\d+)", re.I)
+
+# Codex tool -> the Claude Code name for the same job, so Tools / Profile / Tips
+# compare agents instead of treating every Codex tool as foreign. Anything not
+# listed (incl. mcp__*) keeps its native name.
+CODEX_TOOL_CLASS = {
+    "exec_command": "Bash", "write_stdin": "Bash", "shell": "Bash", "local_shell": "Bash",
+    "apply_patch": "Edit", "view_image": "Read",
+    "web__run": "WebSearch", "web_search": "WebSearch",
+    "spawn_agent": "Task",
+}
+
+
+def _unjs(s: str) -> str:
+    """Undo JS/JSON string escapes in a captured literal (best effort)."""
+    try:
+        return json.loads(f'"{s}"')
+    except ValueError:
+        return s
+
+
+def _codex_calls(payload: dict) -> List[Tuple[str, Optional[str]]]:
+    """(tool_class, target) per underlying tool call in one Codex response item.
+
+    Codex's `exec` custom tool is a JS snippet that calls tools.exec_command /
+    tools.apply_patch / ... one or more times; the real tool names live in the
+    source. Plain function_calls carry JSON arguments.
+    """
+    name, pt = payload.get("name") or "unknown", payload.get("type")
+    out: List[Tuple[str, Optional[str]]] = []
+    if pt == "function_call":
+        out.append((CODEX_TOOL_CLASS.get(name, name), _codex_target(payload.get("arguments"))))
+    else:
+        src = payload.get("input") or ""
+        cmds = [_unjs(c) for c in _JS_CMD.findall(src)]
+        names = _JS_TOOL.findall(src)
+        for n in names:
+            if n == "apply_patch":
+                files = _PATCH_FILE.findall(src) or [None]
+                out.extend(("Edit", f) for f in files)
+            elif n == "exec_command":
+                out.append(("Bash", (cmds.pop(0) if cmds else None)))
+            else:
+                out.append((CODEX_TOOL_CLASS.get(n, n), None))
+        if not names:
+            out.append((CODEX_TOOL_CLASS.get(name, name), None))
+    # Codex has no Skill tool; a skill is "used" when its SKILL.md is read.
+    for cls, tgt in list(out):
+        if cls == "Bash" and tgt:
+            for sk in _SKILL_MD.findall(tgt):
+                out.append(("Skill", sk))
+    return [(c, (t[:500] if isinstance(t, str) else t)) for c, t in out]
+
+
+def _codex_output(payload: dict) -> Tuple[int, int]:
+    """(approx_tokens, is_error) for a function/custom tool output item."""
+    body = payload.get("output")
+    if isinstance(body, list):
+        body = "".join(b.get("text", "") for b in body if isinstance(b, dict))
+    body = body if isinstance(body, str) else json.dumps(body or "")
+    code = _EXIT_CODE.search(body)
+    return len(body) // 4, int(bool(code and int(code.group(1)) != 0))
+
+
+def scan_codex_file(path: Path, root: Path, conn, start_byte: int = 0,
+                    state: Optional[dict] = None, source: str = "codex") -> dict:
+    """Ingest an OpenAI Codex CLI/desktop rollout (~/.codex/sessions/**/rollout-*.jsonl).
+
+    One assistant row per API call, from `token_count` events. Codex repeats
+    the same event (identical cumulative total) when nothing new was billed,
+    so only events whose cumulative total moved are counted; verified: the
+    deduped per-call sum equals the final cumulative total exactly.
+    Codex's `input_tokens` already includes cached tokens, so cached tokens
+    are split out to cache_read and removed from input to avoid double-billing.
+    """
+    st = dict(state or {})
+    m = _UUID_TAIL.search(path.name)
+    # tid (from the filename, unique per file) keys rows. sid groups a session:
+    # subagents share their parent's, as Claude sidechains do. Only the FIRST
+    # session_meta describes this file; forks embed further metas for inherited
+    # history, and trusting those collided keys across files.
+    tid = m.group(1) if m else path.stem
+    sid = st.get("sid") or tid
+    msgs = tools = 0
+    end = start_byte
+    pending: List[dict] = []  # tool calls since the last billed API call
+    for line_start, line_end, rec in _iter_lines(path, start_byte):
+        end = line_end
+        if rec is None:
+            continue
+        t, p, ts = rec.get("type"), rec.get("payload") or {}, rec.get("timestamp")
+        ordinal = rec.get("ordinal")
+        key = f"{source}:{tid}:" + (str(ordinal) if ordinal is not None else f"b{line_start}")
+        slug = lambda: _encode_slug(st["cwd"]) if st.get("cwd") else f"{source}-unknown"
+        if t == "session_meta" and not st.get("meta_seen"):
+            sid = p.get("session_id") or p.get("id") or tid
+            st.update(meta_seen=True, sid=sid, cwd=p.get("cwd") or st.get("cwd"),
+                      version=p.get("cli_version"), entrypoint=p.get("originator"),
+                      sidechain=int(p.get("thread_source") == "subagent"),
+                      agent=p.get("agent_nickname"))
+        elif t == "turn_context":
+            st["model"] = p.get("model") or st.get("model")
+            st["cwd"] = p.get("cwd") or st.get("cwd")
+        elif t == "response_item" and ts:
+            pt = p.get("type")
+            if pt == "message" and p.get("role") == "user":
+                text = "".join(b.get("text", "") for b in (p.get("content") or [])
+                               if isinstance(b, dict) and b.get("type") == "input_text")
+                # Codex injects context (AGENTS.md, environment) as user messages.
+                if text and not text.lstrip().startswith(("<", "# AGENTS.md")):
+                    conn.execute(INSERT_MSG, _blank_msg(
+                        source, uuid=key, session_id=sid, project_slug=slug(), cwd=st.get("cwd"),
+                        cc_version=st.get("version"), entrypoint=st.get("entrypoint"), type="user",
+                        is_sidechain=st.get("sidechain", 0), agent_id=st.get("agent"), timestamp=ts, prompt_text=text, prompt_chars=len(text)))
+                    st["last_user"] = key
+                    msgs += 1
+            elif pt in ("function_call", "custom_tool_call"):
+                for cls, tgt in _codex_calls(p):
+                    conn.execute(INSERT_TOOL, {
+                        "message_uuid": key, "session_id": sid, "project_slug": slug(),
+                        "tool_name": cls, "target": tgt, "result_tokens": None,
+                        "is_error": 0, "timestamp": ts})
+                    pending.append({"name": cls, "target": tgt})
+                    tools += 1
+            elif pt in ("function_call_output", "custom_tool_call_output"):
+                toks, err = _codex_output(p)
+                conn.execute(INSERT_TOOL, {
+                    "message_uuid": key, "session_id": sid, "project_slug": slug(),
+                    "tool_name": "_tool_result", "target": p.get("call_id"),
+                    "result_tokens": toks, "is_error": err, "timestamp": ts})
+                tools += 1
+        elif t == "event_msg" and ts and p.get("type") == "token_count":
+            info = p.get("info") or {}
+            total, last = info.get("total_token_usage"), info.get("last_token_usage") or {}
+            if not total or total == st.get("last_total"):
+                continue
+            st["last_total"] = total
+            cached = int(last.get("cached_input_tokens") or 0)
+            conn.execute(INSERT_MSG, _blank_msg(
+                source, uuid=key, parent_uuid=st.get("last_user"), session_id=sid,
+                project_slug=slug(), cwd=st.get("cwd"), cc_version=st.get("version"),
+                entrypoint=st.get("entrypoint"), is_sidechain=st.get("sidechain", 0),
+                agent_id=st.get("agent"), timestamp=ts, model=st.get("model"),
+                input_tokens=max(int(last.get("input_tokens") or 0) - cached, 0),
+                output_tokens=int(last.get("output_tokens") or 0),
+                cache_read_tokens=cached,
+                tool_calls_json=json.dumps(pending) if pending else None))
+            pending = []
+            msgs += 1
+    st["sid"] = sid
+    return {"messages": msgs, "tools": tools, "end_offset": end, "state": st}
+
+
+def scan_generic_file(path: Path, root: Path, conn, start_byte: int = 0,
+                      state: Optional[dict] = None, source: str = "generic") -> dict:
+    """Ingest a normalised JSONL any agent can emit, one object per API call:
+
+        {"session_id", "timestamp", "model", "input_tokens", "output_tokens",
+         "cache_read_tokens"?, "cwd"?, "project"?, "prompt"?, "tools"?: ["name", ...]}
+
+    `input_tokens` here means uncached input. Required: session_id, timestamp.
+    """
+    msgs = tools = 0
+    end = start_byte
+    tag = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    for line_start, line_end, rec in _iter_lines(path, start_byte):
+        end = line_end
+        if not rec or not rec.get("session_id") or not rec.get("timestamp"):
+            continue
+        sid, ts = str(rec["session_id"]), rec["timestamp"]
+        cwd = rec.get("cwd")
+        slug = rec.get("project") or (_encode_slug(cwd) if cwd else f"{source}-unknown")
+        key = f"{source}:{tag}:{line_start}"
+        parent = None
+        if rec.get("prompt"):
+            parent = key + ":u"
+            conn.execute(INSERT_MSG, _blank_msg(
+                source, uuid=parent, session_id=sid, project_slug=slug, cwd=cwd, type="user",
+                timestamp=ts, prompt_text=str(rec["prompt"]), prompt_chars=len(str(rec["prompt"]))))
+            msgs += 1
+        names = [str(n) for n in (rec.get("tools") or [])]
+        conn.execute(INSERT_MSG, _blank_msg(
+            source, uuid=key, parent_uuid=parent, session_id=sid, project_slug=slug, cwd=cwd,
+            timestamp=ts, model=rec.get("model"),
+            input_tokens=int(rec.get("input_tokens") or 0),
+            output_tokens=int(rec.get("output_tokens") or 0),
+            cache_read_tokens=int(rec.get("cache_read_tokens") or 0),
+            tool_calls_json=json.dumps([{"name": n, "target": None} for n in names]) if names else None))
+        msgs += 1
+        for n in names:
+            conn.execute(INSERT_TOOL, {
+                "message_uuid": key, "session_id": sid, "project_slug": slug, "tool_name": n,
+                "target": None, "result_tokens": None, "is_error": 0, "timestamp": ts})
+            tools += 1
+    return {"messages": msgs, "tools": tools, "end_offset": end, "state": state or {}}
+
+
+def _scan_claude_file(path, root, conn, start_byte=0, state=None, source="claude"):
+    sub = scan_file(path, _project_slug(path, root), conn, start_byte=start_byte, source=source)
+    sub["state"] = state or {}
+    return sub
+
+
+# kind -> (parser, glob). New agents are one entry here plus a parser above.
+KINDS = {
+    "claude":  (_scan_claude_file,  "*.jsonl"),
+    "codex":   (scan_codex_file,    "*.jsonl"),
+    "generic": (scan_generic_file,  "*.jsonl"),
+}
+
+
+def scan_source(name: str, kind: str, root: Union[str, Path], db_path: Union[str, Path]) -> dict:
     totals = {"messages": 0, "tools": 0, "files": 0}
-    if not root.is_dir():
+    if kind not in KINDS:
+        raise ValueError(f"unknown source kind {kind!r}; expected one of {sorted(KINDS)}")
+    parser, _ = KINDS[kind]
+    root = Path(root).expanduser()
+    if root.is_file():
+        files, base = [root], root.parent
+    elif root.is_dir():
+        files, base = root.rglob("*.jsonl"), root
+    else:
         return totals
     with connect(db_path) as conn:
-        for p in root.rglob("*.jsonl"):
+        for p in files:
             try:
                 stat = p.stat()
             except OSError:
                 continue
             row = conn.execute(
-                "SELECT mtime, bytes_read FROM files WHERE path=?", (str(p),)
+                "SELECT mtime, bytes_read, state FROM files WHERE path=?", (str(p),)
             ).fetchone()
-            offset = 0
+            offset, state = 0, None
             if row and row["mtime"] == stat.st_mtime and row["bytes_read"] == stat.st_size:
                 continue
             if row and stat.st_size > row["bytes_read"]:
                 offset = row["bytes_read"]
-            slug = _project_slug(p, root)
-            sub = scan_file(p, slug, conn, start_byte=offset)
+                state = json.loads(row["state"]) if row["state"] else None
+            sub = parser(p, base, conn, offset, state, name)
             # Persist the byte offset of the last fully-parsed line (not
             # st_size) so a partial line mid-flush is retried on the next
             # scan instead of being skipped over.
             conn.execute(
-                "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at) VALUES (?, ?, ?, ?)",
-                (str(p), stat.st_mtime, sub["end_offset"], time.time()),
+                "INSERT OR REPLACE INTO files (path, mtime, bytes_read, scanned_at, state) VALUES (?, ?, ?, ?, ?)",
+                (str(p), stat.st_mtime, sub["end_offset"], time.time(), json.dumps(sub["state"])),
             )
+            conn.commit()
             totals["messages"] += sub["messages"]
             totals["tools"]    += sub["tools"]
             totals["files"]    += 1
-        conn.commit()
+    return totals
+
+
+def scan_dir(projects_root: Union[str, Path], db_path: Union[str, Path]) -> dict:
+    """Scan Claude Code transcripts only (kept for callers that predate multi-agent)."""
+    return scan_source("claude", "claude", projects_root, db_path)
+
+
+def scan_sources(sources, db_path: Union[str, Path]) -> dict:
+    """Scan every configured source; sources = [{"name","kind","path"}, ...]."""
+    totals = {"messages": 0, "tools": 0, "files": 0}
+    for s in sources:
+        n = scan_source(s["name"], s["kind"], s["path"], db_path)
+        for k in totals:
+            totals[k] += n[k]
     return totals

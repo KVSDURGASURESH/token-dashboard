@@ -6,13 +6,14 @@ export default async function (root) {
   const range = readRange();
   const since = sinceIso(range);
 
-  const [totals, projects, sessions, tools, daily, byModel] = await Promise.all([
+  const [totals, projects, sessions, tools, daily, byModel, bySource] = await Promise.all([
     api(withSince('/api/overview', since)),
     api(withSince('/api/projects', since)),
     api(withSince('/api/sessions?limit=10', since)),
     api(withSince('/api/tools', since)),
     api(withSince('/api/daily', since)),
     api(withSince('/api/by-model', since)),
+    api(withSince('/api/by-source', since)),
   ]);
 
   const cacheCreate =
@@ -47,10 +48,24 @@ export default async function (root) {
       </div>
     </div>
 
+    ${bySource.length > 1 ? `
+    <div class="card" style="margin-top:16px">
+      <h3>BY AGENT</h3>
+      <p class="muted" style="margin:-4px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">EVERY CONFIGURED AGENT SIDE BY SIDE. PICK ONE IN THE TOP BAR TO FILTER ALL TABS. CODEX INPUT EXCLUDES CACHED TOKENS. COST SHOWS — FOR MODELS MISSING FROM PRICING.JSON.</p>
+      <table>
+        <thead><tr><th>Agent</th><th>Sessions</th><th>Turns</th><th>Input</th><th>Output</th><th>Cache read</th><th>Est. cost</th></tr></thead>
+        <tbody>${bySource.map(r => `
+          <tr><td>${fmt.htmlSafe(r.source.toUpperCase())}</td><td>${fmt.int(r.sessions)}</td><td>${fmt.int(r.turns)}</td>
+          <td>${fmt.compact(r.input_tokens)}</td><td>${fmt.compact(r.output_tokens)}</td><td>${fmt.compact(r.cache_read_tokens)}</td>
+          <td title="${r.unpriced_models ? r.unpriced_models + ' model(s) unpriced' : ''}">${fmt.usd(r.cost_usd)}${r.unpriced_models && r.cost_usd != null ? ' +' : ''}</td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : ''}
+
     <details class="card glossary" style="margin-top:16px">
       <summary><h3 style="display:inline-block;margin:0">WHAT DO THESE NUMBERS MEAN?</h3><span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em">— CLICK TO EXPAND</span></summary>
       <dl>
-        <dt>Session</dt><dd>One run of Claude Code (from <code>claude</code> to exit). Each session is a single <code>.jsonl</code> file.</dd>
+        <dt>Session</dt><dd>One run of an agent (Claude Code, Codex, …) from start to exit. Each session is a single <code>.jsonl</code> file; Codex subagents are grouped under their parent session.</dd>
         <dt>Turn</dt><dd>One message you sent to Claude. Each turn triggers a response (possibly with tool calls in between).</dd>
         <dt>Input tokens</dt><dd>The new text you (and tool results) sent to Claude this turn. Billed at the full input rate.</dd>
         <dt>Output tokens</dt><dd>The text Claude wrote back. Billed at the highest rate — usually the biggest cost driver per turn.</dd>
@@ -77,7 +92,7 @@ export default async function (root) {
       <div class="card"><h3>TOKENS BY PROJECT</h3><div id="ch-projects" style="height:320px"></div></div>
       <div class="card">
         <h3>TOKEN USAGE BY MODEL</h3>
-        <p class="muted" style="margin:-4px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">SHARE OF BILLABLE TOKENS PER CLAUDE MODEL.</p>
+        <p class="muted" style="margin:-4px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">SHARE OF BILLABLE TOKENS PER MODEL, ACROSS ALL AGENTS IN VIEW.</p>
         <div id="ch-model" style="height:300px"></div>
       </div>
     </div>

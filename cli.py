@@ -9,7 +9,8 @@ from pathlib import Path
 
 from token_dashboard.db import init_db, default_db_path, overview_totals
 from token_dashboard.recommendations import build_recommendations_markdown
-from token_dashboard.scanner import scan_dir
+from token_dashboard.scanner import scan_sources
+from token_dashboard.sources import resolve_sources, CODEX_DEFAULT
 from token_dashboard.tips import all_tips
 
 
@@ -25,6 +26,19 @@ def _projects(args) -> str:
     )
 
 
+def _sources(args) -> list:
+    """Claude Code + any configured/flagged agents. An explicit --projects-dir
+    skips the config file so it means exactly that directory."""
+    extra = list(getattr(args, "source", None) or [])
+    if getattr(args, "codex", False):
+        extra.insert(0, f"codex=codex:{CODEX_DEFAULT}")
+    pinned = bool(getattr(args, "projects_dir", None) or os.environ.get("CLAUDE_PROJECTS_DIR"))
+    try:
+        return resolve_sources(_projects(args), use_config=not pinned, extra=extra)
+    except ValueError as e:
+        raise SystemExit(f"Token Dashboard: {e}")
+
+
 def _today_range():
     now = datetime.now(timezone.utc)
     start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).isoformat()
@@ -35,7 +49,7 @@ def _today_range():
 def cmd_scan(args):
     db = _db_path(args)
     init_db(db)
-    n = scan_dir(_projects(args), db)
+    n = scan_sources(_sources(args), db)
     print(f"Token Dashboard: scanned {n['files']} files, {n['messages']} messages, {n['tools']} tool calls")
 
 
@@ -97,7 +111,7 @@ def cmd_dashboard(args):
     # starts accepting connections immediately, instead of blocking behind
     # a full scan of potentially years of session history. The frontend
     # renders progressively as scan results arrive via the SSE stream.
-    run(host, port, db, _projects(args), scan=not args.no_scan)
+    run(host, port, db, _projects(args), scan=not args.no_scan, sources=_sources(args))
 
 
 def main():
@@ -111,6 +125,12 @@ def main():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--db", default=argparse.SUPPRESS, help="SQLite path (default ~/.claude/token-dashboard.db)")
     common.add_argument("--projects-dir", default=argparse.SUPPRESS, help="JSONL root (default ~/.claude/projects)")
+
+    common.add_argument("--source", action="append", default=argparse.SUPPRESS, metavar="NAME=KIND:PATH",
+                        help="extra agent log source, repeatable; kinds: claude, codex, generic "
+                             "(e.g. codex=codex:~/.codex/sessions)")
+    common.add_argument("--codex", action="store_true", default=argparse.SUPPRESS,
+                        help="shorthand for --source codex=codex:~/.codex/sessions")
 
     p = argparse.ArgumentParser(prog="token-dashboard", description="Local Claude Code usage dashboard", parents=[common])
     sub = p.add_subparsers(dest="cmd", required=True)

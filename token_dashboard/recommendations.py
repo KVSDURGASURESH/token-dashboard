@@ -23,8 +23,8 @@ INTRO = (
 )
 
 
-def build_recommendations_markdown(db_path, today_iso: Optional[str] = None) -> str:
-    tips = all_tips(db_path, today_iso)
+def build_recommendations_markdown(db_path, today_iso: Optional[str] = None, source=None) -> str:
+    tips = all_tips(db_path, today_iso, source)
     if not tips:
         return ""
     lines = [HEADER, "", INTRO, ""]

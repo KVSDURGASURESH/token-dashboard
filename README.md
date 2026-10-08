@@ -43,6 +43,32 @@ python3 cli.py tips         # actionable suggestions (terminal)
 python3 cli.py dashboard    # scan + serve the UI
 ```
 
+## Tracking other agents (Codex, anything else)
+
+Claude Code is always scanned. Add more agents and they land in the same DB, tagged by `source`;
+the top bar gets an agent picker and Overview gets a BY AGENT table.
+
+```
+./run.sh --codex                                    # shorthand for the line below
+python3 cli.py dashboard --source codex=codex:~/.codex/sessions
+python3 cli.py scan --source mybot=generic:~/logs/mybot.jsonl
+```
+
+Or make it permanent in `~/.claude/token-dashboard-sources.json` (honoured unless `--projects-dir` is pinned):
+
+```json
+[{"name": "codex", "kind": "codex", "path": "~/.codex/sessions"}]
+```
+
+Kinds: `claude`, `codex` (OpenAI Codex CLI/desktop rollouts), `generic` (one JSON object per API call:
+`session_id`, `timestamp`, `model`, `input_tokens` (uncached), `output_tokens`, optional
+`cache_read_tokens`, `cwd`, `prompt`, `tools`). Any agent that can write that line is trackable;
+a new native format is one parser in `scanner.py` plus an entry in `KINDS`.
+
+Costs: models missing from `pricing.json` (all non-Claude models, until you add rates) show as `—`, not `$0`.
+Add `"gpt-x": {"input": .., "output": .., "cache_read": ..}` under `models` to price them.
+Codex subagents are grouped under their parent session and flagged as sidechains.
+
 ## Architecture
 
 ```

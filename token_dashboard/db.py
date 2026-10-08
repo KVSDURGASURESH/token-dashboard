@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS files (
   path        TEXT PRIMARY KEY,
   mtime       REAL    NOT NULL,
   bytes_read  INTEGER NOT NULL,
-  scanned_at  REAL    NOT NULL
+  scanned_at  REAL    NOT NULL,
+  state       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -40,13 +41,15 @@ CREATE TABLE IF NOT EXISTS messages (
   cache_create_1h_tokens  INTEGER NOT NULL DEFAULT 0,
   prompt_text             TEXT,
   prompt_chars            INTEGER,
-  tool_calls_json         TEXT
+  tool_calls_json         TEXT,
+  source                  TEXT NOT NULL DEFAULT 'claude'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session   ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_project   ON messages(project_slug);
 CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_model     ON messages(model);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid     ON messages(session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_source    ON messages(source);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,6 +87,7 @@ def init_db(path: Union[str, Path]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as c:
         _migrate_add_message_id(c)
+        _migrate_add_source(c)
         c.executescript(SCHEMA)
 
 
@@ -110,6 +114,22 @@ def _migrate_add_message_id(conn) -> None:
     conn.commit()
 
 
+def _migrate_add_source(conn) -> None:
+    """Add messages.source (which agent wrote the row) and files.state.
+
+    Non-destructive: existing rows are all Claude Code, which is the column
+    default, so no rescan is needed. files.state holds per-file parser state
+    (e.g. Codex's current model) so incremental scans can resume mid-file.
+    """
+    def cols(table):
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if cols("messages") and "source" not in cols("messages"):
+        conn.execute("ALTER TABLE messages ADD COLUMN source TEXT NOT NULL DEFAULT 'claude'")
+    if cols("files") and "state" not in cols("files"):
+        conn.execute("ALTER TABLE files ADD COLUMN state TEXT")
+    conn.commit()
+
+
 @contextmanager
 def connect(path: Union[str, Path]):
     conn = sqlite3.connect(path)
@@ -121,8 +141,19 @@ def connect(path: Union[str, Path]):
         conn.close()
 
 
-def _range_clause(since, until, col: str = "timestamp"):
+def _range_clause(since, until, col: str = "timestamp", source=None, tool_table: bool = False):
+    """AND-clause for time range plus optional agent ``source`` filter.
+
+    tool_table=True is for queries on tool_calls, which has no source column:
+    the filter goes through the owning session's messages instead.
+    """
     where, args = [], []
+    if source:
+        if tool_table:
+            where.append("session_id IN (SELECT session_id FROM messages WHERE source = ?)")
+        else:
+            where.append("source = ?")
+        args.append(source)
     if since:
         where.append(f"{col} >= ?"); args.append(since)
     if until:
@@ -186,8 +217,8 @@ def best_project_name(cwds, slug: str) -> str:
     return project_name_for(cwds[0] if cwds else None, slug)
 
 
-def overview_totals(db_path, since=None, until=None) -> dict:
-    rng, args = _range_clause(since, until)
+def overview_totals(db_path, since=None, until=None, source=None) -> dict:
+    rng, args = _range_clause(since, until, source=source)
     sql = f"""
       SELECT COUNT(DISTINCT session_id) AS sessions,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
@@ -202,15 +233,16 @@ def overview_totals(db_path, since=None, until=None) -> dict:
         return dict(c.execute(sql, args).fetchone())
 
 
-def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
+def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens", source=None) -> list:
     """User prompt joined with the immediately-following assistant turn's tokens.
 
     sort="tokens" (default) → largest billable first.
     sort="recent"           → newest first.
     """
     order = "u.timestamp DESC" if sort == "recent" else "billable_tokens DESC"
+    src, src_args = ("AND u.source = ?", [source]) if source else ("", [])
     sql = f"""
-      SELECT u.uuid AS user_uuid, u.session_id, u.project_slug, u.timestamp,
+      SELECT u.uuid AS user_uuid, u.session_id, u.project_slug, u.timestamp, u.source,
              u.prompt_text, u.prompt_chars,
              a.uuid AS assistant_uuid, a.model,
              COALESCE(a.input_tokens,0)+COALESCE(a.output_tokens,0)
@@ -218,16 +250,16 @@ def expensive_prompts(db_path, limit: int = 50, sort: str = "tokens") -> list:
              COALESCE(a.cache_read_tokens,0) AS cache_read_tokens
         FROM messages u
         JOIN messages a ON a.parent_uuid = u.uuid AND a.type='assistant'
-       WHERE u.type='user' AND u.prompt_text IS NOT NULL
+       WHERE u.type='user' AND u.prompt_text IS NOT NULL {src}
        ORDER BY {order}
        LIMIT ?
     """
     with connect(db_path) as c:
-        return [dict(r) for r in c.execute(sql, (limit,))]
+        return [dict(r) for r in c.execute(sql, (*src_args, limit))]
 
 
-def project_summary(db_path, since=None, until=None) -> list:
-    rng, args = _range_clause(since, until)
+def project_summary(db_path, since=None, until=None, source=None) -> list:
+    rng, args = _range_clause(since, until, source=source)
     sql = f"""
       SELECT project_slug,
              COUNT(DISTINCT session_id) AS sessions,
@@ -253,8 +285,8 @@ def project_summary(db_path, since=None, until=None) -> list:
     return rows
 
 
-def tool_token_breakdown(db_path, since=None, until=None) -> list:
-    rng, args = _range_clause(since, until)
+def tool_token_breakdown(db_path, since=None, until=None, source=None) -> list:
+    rng, args = _range_clause(since, until, source=source, tool_table=True)
     sql = f"""
       SELECT tool_name,
              COUNT(*) AS calls,
@@ -268,10 +300,10 @@ def tool_token_breakdown(db_path, since=None, until=None) -> list:
         return [dict(r) for r in c.execute(sql, args)]
 
 
-def recent_sessions(db_path, limit: int = 20, since=None, until=None) -> list:
-    rng, args = _range_clause(since, until)
+def recent_sessions(db_path, limit: int = 20, since=None, until=None, source=None) -> list:
+    rng, args = _range_clause(since, until, source=source)
     sql = f"""
-      SELECT session_id, project_slug,
+      SELECT session_id, project_slug, MIN(source) AS source,
              MIN(timestamp) AS started, MAX(timestamp) AS ended,
              SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
              SUM(input_tokens)+SUM(output_tokens) AS tokens
@@ -302,7 +334,7 @@ def session_turns(db_path, session_id: str) -> list:
       SELECT uuid, parent_uuid, type, timestamp, model, is_sidechain, agent_id,
              input_tokens, output_tokens, cache_read_tokens,
              cache_create_5m_tokens, cache_create_1h_tokens,
-             prompt_text, prompt_chars, tool_calls_json, project_slug, cwd
+             prompt_text, prompt_chars, tool_calls_json, project_slug, cwd, source
         FROM messages
        WHERE session_id = ?
        ORDER BY timestamp ASC
@@ -311,9 +343,9 @@ def session_turns(db_path, session_id: str) -> list:
         return [dict(r) for r in c.execute(sql, (session_id,))]
 
 
-def daily_token_breakdown(db_path, since=None, until=None) -> list:
+def daily_token_breakdown(db_path, since=None, until=None, source=None) -> list:
     """One row per day: stacked bar data for input/output/cache_read/cache_create."""
-    rng, args = _range_clause(since, until)
+    rng, args = _range_clause(since, until, source=source)
     sql = f"""
       SELECT substr(timestamp, 1, 10) AS day,
              COALESCE(SUM(input_tokens),0)      AS input_tokens,
@@ -330,7 +362,7 @@ def daily_token_breakdown(db_path, since=None, until=None) -> list:
         return [dict(r) for r in c.execute(sql, args)]
 
 
-def skill_breakdown(db_path, since=None, until=None) -> list:
+def skill_breakdown(db_path, since=None, until=None, source=None) -> list:
     """Per-skill invocation counts, distinct sessions, last-used timestamp.
 
     Token attribution per skill is not included: in Claude Code, a Skill's
@@ -341,7 +373,7 @@ def skill_breakdown(db_path, since=None, until=None) -> list:
     invocation row) could enable precise attribution; for now we only expose
     the reliable counts.
     """
-    rng, args = _range_clause(since, until)
+    rng, args = _range_clause(since, until, source=source, tool_table=True)
     sql = f"""
       SELECT target AS skill,
              COUNT(*) AS invocations,
@@ -356,9 +388,9 @@ def skill_breakdown(db_path, since=None, until=None) -> list:
         return [dict(r) for r in c.execute(sql, args)]
 
 
-def model_breakdown(db_path, since=None, until=None) -> list:
+def model_breakdown(db_path, since=None, until=None, source=None) -> list:
     """Per-model token totals + turn count. Caller computes cost via pricing."""
-    rng, args = _range_clause(since, until)
+    rng, args = _range_clause(since, until, source=source)
     sql = f"""
       SELECT COALESCE(model, 'unknown') AS model,
              COUNT(*) AS turns,
@@ -371,6 +403,27 @@ def model_breakdown(db_path, since=None, until=None) -> list:
        WHERE type = 'assistant' {rng}
        GROUP BY model
        ORDER BY (input_tokens + output_tokens + cache_create_5m_tokens + cache_create_1h_tokens) DESC
+    """
+    with connect(db_path) as c:
+        return [dict(r) for r in c.execute(sql, args)]
+
+
+def source_breakdown(db_path, since=None, until=None) -> list:
+    """Per-agent totals so Claude Code, Codex etc. can be compared side by side."""
+    rng, args = _range_clause(since, until)
+    sql = f"""
+      SELECT source,
+             COUNT(DISTINCT session_id) AS sessions,
+             SUM(CASE WHEN type='user' THEN 1 ELSE 0 END) AS turns,
+             COALESCE(SUM(input_tokens),0)            AS input_tokens,
+             COALESCE(SUM(output_tokens),0)           AS output_tokens,
+             COALESCE(SUM(cache_read_tokens),0)       AS cache_read_tokens,
+             COALESCE(SUM(cache_create_5m_tokens),0)  AS cache_create_5m_tokens,
+             COALESCE(SUM(cache_create_1h_tokens),0)  AS cache_create_1h_tokens
+        FROM messages
+       WHERE 1=1 {rng}
+       GROUP BY source
+       ORDER BY (input_tokens + output_tokens) DESC
     """
     with connect(db_path) as c:
         return [dict(r) for r in c.execute(sql, args)]

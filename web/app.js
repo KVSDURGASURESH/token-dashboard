@@ -17,13 +17,21 @@ export const fmt = {
     if (s.includes('opus'))   return 'opus';
     if (s.includes('sonnet')) return 'sonnet';
     if (s.includes('haiku'))  return 'haiku';
+    if (s.includes('gpt') || s.includes('codex')) return 'gpt';
     return '';
   },
   modelShort: m => (m || '').replace('claude-', ''),
   ts: t => (t || '').slice(0, 16).replace('T', ' '),
 };
 
+// Endpoints that must not be narrowed to the agent picked in the top bar.
+const SOURCE_EXEMPT = ['/api/by-source', '/api/plan', '/api/scan', '/api/stream'];
+
 export async function api(path, opts) {
+  const source = readHashParam('source');
+  if (source && !(opts && opts.method) && !SOURCE_EXEMPT.some(p => path.startsWith(p)) && path.startsWith('/api/')) {
+    path += (path.includes('?') ? '&' : '?') + 'source=' + encodeURIComponent(source);
+  }
   const r = await fetch(path, opts);
   if (!r.ok) throw new Error(`${path} → ${r.status}`);
   return r.json();
@@ -38,8 +46,11 @@ export function readHashParam(name) {
 
 export function writeHashParam(name, value) {
   // An empty hash means the default route, which is /overview.
-  const base = location.hash.replace(/^#/, '').split('?')[0] || '/overview';
-  location.hash = `#${base}?${name}=${encodeURIComponent(value)}`;
+  const [rawBase, rawQuery] = location.hash.replace(/^#/, '').split('?');
+  const params = new URLSearchParams(rawQuery || '');
+  if (value == null || value === '') params.delete(name); else params.set(name, value);
+  const q = params.toString();
+  location.hash = `#${rawBase || '/overview'}${q ? '?' + q : ''}`;
 }
 
 const ROUTES = {
@@ -62,10 +73,24 @@ function buildTopbar() {
       ${Object.keys(ROUTES).map(p => `<a href="#${p}" data-route="${p}">${p.slice(1).toUpperCase()}</a>`).join('')}
     </nav>
     <div class="spacer"></div>
+    <select class="pill" id="source-select" title="Filter every tab to one agent" hidden></select>
     <span class="pill" id="plan-pill">API</span>
     <span class="pill muted" title="Cmd/Ctrl+B blurs sensitive text">⌘B BLUR</span>
   `;
   document.body.prepend(wrap);
+}
+
+// Agent picker: only shown once more than one agent has data.
+async function fillSourcePicker() {
+  const sel = $('#source-select');
+  let rows = [];
+  try { rows = await api('/api/by-source'); } catch { return; }
+  if (rows.length < 2) { sel.hidden = true; return; }
+  const cur = readHashParam('source') || '';
+  sel.innerHTML = `<option value="">ALL AGENTS</option>` +
+    rows.map(r => `<option value="${fmt.htmlSafe(r.source)}"${r.source === cur ? ' selected' : ''}>${fmt.htmlSafe(r.source.toUpperCase())}</option>`).join('');
+  sel.hidden = false;
+  sel.onchange = () => writeHashParam('source', sel.value);
 }
 
 function setActiveTab(routeKey) {
@@ -124,6 +149,7 @@ async function boot() {
   $('#plan-pill').textContent = state.plan;
 
   await firstRun();
+  fillSourcePicker();
 
   window.addEventListener('hashchange', render);
   await render();
@@ -142,7 +168,7 @@ async function boot() {
     es.onmessage = ev => {
       try {
         const evt = JSON.parse(ev.data);
-        if (evt.type === 'scan') render();
+        if (evt.type === 'scan') { fillSourcePicker(); render(); }
       } catch {}
     };
   } catch {}

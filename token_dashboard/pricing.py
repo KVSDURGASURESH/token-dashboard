@@ -34,9 +34,9 @@ def cost_for(model: str, usage: dict, pricing: dict) -> dict:
     bd = {
         "input":           usage["input_tokens"]            * rates["input"]           / 1_000_000,
         "output":          usage["output_tokens"]           * rates["output"]          / 1_000_000,
-        "cache_read":      usage["cache_read_tokens"]       * rates["cache_read"]      / 1_000_000,
-        "cache_create_5m": usage["cache_create_5m_tokens"]  * rates["cache_create_5m"] / 1_000_000,
-        "cache_create_1h": usage["cache_create_1h_tokens"]  * rates["cache_create_1h"] / 1_000_000,
+        "cache_read":      usage["cache_read_tokens"]       * rates.get("cache_read", 0)      / 1_000_000,
+        "cache_create_5m": usage["cache_create_5m_tokens"]  * rates.get("cache_create_5m", 0) / 1_000_000,
+        "cache_create_1h": usage["cache_create_1h_tokens"]  * rates.get("cache_create_1h", 0) / 1_000_000,
     }
     return {"usd": round(sum(bd.values()), 6), "estimated": estimated, "breakdown": bd}
 
