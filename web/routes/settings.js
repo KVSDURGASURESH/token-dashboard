@@ -1,8 +1,9 @@
-import { api, state, $ } from '/web/app.js';
+import { api, state, $, $$, fmt, agentBadge } from '/web/app.js';
 
 export default async function (root) {
   const cur = await api('/api/plan');
   const plans = Object.entries(cur.pricing.plans);
+  const agents = (await api('/api/by-source')).map(r => r.source);
   root.innerHTML = `
     <div class="card">
       <h2>SETTINGS</h2>
@@ -15,6 +16,18 @@ export default async function (root) {
         <button class="primary" id="save">Save</button>
         <span id="msg" class="muted"></span>
       </div>
+
+      <hr class="divider">
+
+      <h3>PLAN PER AGENT</h3>
+      <p class="muted" style="margin:0 0 12px;text-transform:uppercase;font-size:11px;letter-spacing:0.04em">EACH AGENT CAN BE ON A DIFFERENT SUBSCRIPTION. AGENTS WITHOUT ONE USE THE PLAN ABOVE.</p>
+      <table>
+        <tbody>${agents.map(a => `
+          <tr><td>${agentBadge(a)}</td><td>
+            <select data-agent="${fmt.htmlSafe(a)}">${plans.map(([k,v]) => `<option value="${k}" ${k===(cur.agent_plans[a]||cur.plan)?'selected':''}>${v.label}${v.monthly?` — $${v.monthly}/mo`:''}</option>`).join('')}</select>
+          </td></tr>`).join('')}
+        </tbody>
+      </table>
 
       <hr class="divider">
 
@@ -40,6 +53,12 @@ export default async function (root) {
       <h3>PRIVACY</h3>
       <p class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:0.04em">PRESS <code>CMD/CTRL + B</code> ANYWHERE TO BLUR PROMPT TEXT AND OTHER SENSITIVE CONTENT FOR SCREENSHOTS.</p>
     </div>`;
+
+  $$('select[data-agent]').forEach(sel => sel.addEventListener('change', async () => {
+    await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan: sel.value, source: sel.dataset.agent }) });
+    $('#msg').textContent = `Saved ${sel.dataset.agent}.`;
+    $('#msg').style.color = 'var(--good)';
+  }));
 
   $('#save').addEventListener('click', async () => {
     const plan = $('#plan').value;

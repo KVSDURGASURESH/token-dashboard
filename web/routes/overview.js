@@ -51,13 +51,14 @@ export default async function (root) {
     ${bySource.length > 1 ? `
     <div class="card" style="margin-top:16px">
       <h3>BY AGENT</h3>
-      <p class="muted" style="margin:-4px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">EVERY CONFIGURED AGENT SIDE BY SIDE. PICK ONE IN THE TOP BAR TO FILTER ALL TABS. CODEX INPUT EXCLUDES CACHED TOKENS. COST SHOWS — FOR MODELS MISSING FROM PRICING.JSON.</p>
+      <p class="muted" style="margin:-4px 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.04em">EVERY CONFIGURED AGENT SIDE BY SIDE. PICK ONE IN THE TOP BAR TO FILTER ALL TABS. CODEX INPUT EXCLUDES CACHED TOKENS. AGENTS ON A SUBSCRIPTION SHOW THE FLAT FEE (SET PER AGENT IN SETTINGS); — MEANS NO PRICE FOR THAT AGENT'S MODELS.</p>
       <table>
         <thead><tr><th>Agent</th><th>Sessions</th><th>Turns</th><th>Input</th><th>Output</th><th>Cache read</th><th>Est. cost</th></tr></thead>
         <tbody>${bySource.map(r => `
           <tr><td>${agentBadge(r.source)}</td><td>${fmt.int(r.sessions)}</td><td>${fmt.int(r.turns)}</td>
           <td>${fmt.compact(r.input_tokens)}</td><td>${fmt.compact(r.output_tokens)}</td><td>${fmt.compact(r.cache_read_tokens)}</td>
-          <td title="${r.unpriced_models ? r.unpriced_models + ' model(s) unpriced' : ''}">${fmt.usd(r.cost_usd)}${r.unpriced_models && r.cost_usd != null ? ' +' : ''}</td></tr>`).join('')}
+          <td title="${r.unpriced_models ? r.unpriced_models + ' model(s) unpriced' : ''}">${costCell(r)}</td>
+          </tr>`).join('')}
         </tbody>
       </table>
     </div>` : ''}
@@ -177,6 +178,13 @@ export default async function (root) {
     categories: topTools.map(t => t.tool_name),
     series: seriesByAgent(topTools),
   });
+}
+
+// Subscription agents show the flat fee; the pay-per-token figure (when the models are priced) rides along.
+function costCell(r) {
+  const api = r.cost_usd == null ? '' : fmt.usd(r.cost_usd) + (r.unpriced_models ? ' +' : '');
+  if (!r.plan_monthly) return api || '—';
+  return `<b>$${fmt.int(r.plan_monthly)}/MO</b> <span class="muted">${fmt.htmlSafe(r.plan_label.toUpperCase())}${api ? ' · API-EQUIV ' + api : ''}</span>`;
 }
 
 function planSubtitle() {

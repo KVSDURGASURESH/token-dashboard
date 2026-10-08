@@ -41,15 +41,29 @@ def cost_for(model: str, usage: dict, pricing: dict) -> dict:
     return {"usd": round(sum(bd.values()), 6), "estimated": estimated, "breakdown": bd}
 
 
-def get_plan(db_path: Union[str, Path], default: str = "api") -> str:
-    with connect(db_path) as c:
-        row = c.execute("SELECT v FROM plan WHERE k='plan'").fetchone()
-    return row["v"] if row else default
+def _plan_key(source: Optional[str]) -> str:
+    return f"plan:{source}" if source else "plan"
 
 
-def set_plan(db_path: Union[str, Path], plan: str) -> None:
+def get_plan(db_path: Union[str, Path], default: str = "api", source: Optional[str] = None) -> str:
+    """Plan for one agent, falling back to the global plan, then `default`."""
     with connect(db_path) as c:
-        c.execute("INSERT OR REPLACE INTO plan (k, v) VALUES ('plan', ?)", (plan,))
+        for k in ([_plan_key(source)] if source else []) + ["plan"]:
+            row = c.execute("SELECT v FROM plan WHERE k=?", (k,)).fetchone()
+            if row:
+                return row["v"]
+    return default
+
+
+def agent_plans(db_path: Union[str, Path]) -> dict:
+    """{agent: plan} for agents that have their own plan set."""
+    with connect(db_path) as c:
+        return {r["k"][5:]: r["v"] for r in c.execute("SELECT k, v FROM plan WHERE k LIKE 'plan:%'")}
+
+
+def set_plan(db_path: Union[str, Path], plan: str, source: Optional[str] = None) -> None:
+    with connect(db_path) as c:
+        c.execute("INSERT OR REPLACE INTO plan (k, v) VALUES (?, ?)", (_plan_key(source), plan))
         c.commit()
 
 

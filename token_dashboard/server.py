@@ -15,7 +15,7 @@ from .db import (
     tool_token_breakdown, recent_sessions, session_turns,
     daily_token_breakdown, model_breakdown, skill_breakdown, source_breakdown,
 )
-from .pricing import load_pricing, cost_for, get_plan, set_plan
+from .pricing import load_pricing, cost_for, get_plan, set_plan, agent_plans
 from .tips import all_tips, dismiss_tip
 from .scanner import scan_sources
 from .skills import cached_catalog, tokens_for
@@ -144,6 +144,9 @@ def build_handler(db_path: str, projects_dir: str, sources=None):
                     # None = no model of this agent is in pricing.json; a $0 would read as "free".
                     r["cost_usd"] = round(sum(priced), 4) if priced else None
                     r["unpriced_models"] = len(costs) - len(priced)
+                    plan = get_plan(db_path, source=r["source"])
+                    p = pricing["plans"].get(plan, pricing["plans"]["api"])
+                    r["plan"], r["plan_label"], r["plan_monthly"] = plan, p["label"], p["monthly"]
                 return _send_json(self, rows)
             if path == "/api/by-model":
                 rows = model_breakdown(db_path, since, until, source)
@@ -160,7 +163,7 @@ def build_handler(db_path: str, projects_dir: str, sources=None):
             if path == "/api/recommendations":
                 return _send_json(self, {"markdown": build_recommendations_markdown(db_path, source=source)})
             if path == "/api/plan":
-                return _send_json(self, {"plan": get_plan(db_path), "pricing": pricing})
+                return _send_json(self, {"plan": get_plan(db_path), "agent_plans": agent_plans(db_path), "pricing": pricing})
             if path == "/api/scan":
                 n = scan_sources(sources, db_path)
                 return _send_json(self, n)
@@ -199,7 +202,7 @@ def build_handler(db_path: str, projects_dir: str, sources=None):
             if not isinstance(body, dict):
                 return _send_error(self, 400, "body must be a JSON object")
             if url.path == "/api/plan":
-                set_plan(db_path, body.get("plan", "api"))
+                set_plan(db_path, body.get("plan", "api"), body.get("source") or None)
                 return _send_json(self, {"ok": True})
             if url.path == "/api/tips/dismiss":
                 dismiss_tip(db_path, body.get("key", ""))

@@ -271,3 +271,15 @@ class HermesTests(unittest.TestCase):
         self.assertIn("ojas-qwen", {m["model"] for m in model_breakdown(self.db)})
         scan_hermes("hermes", self.home, self.db, self.opts)
         self.assertNotIn("ojas-qwen", {m["model"] for m in model_breakdown(self.db)})
+
+
+class AgentPlanTests(unittest.TestCase):
+    def test_agent_plan_falls_back_to_global(self):
+        from token_dashboard.pricing import get_plan, set_plan, agent_plans
+        db = str(Path(tempfile.mkdtemp()) / "t.db")
+        init_db(db)
+        self.assertEqual(get_plan(db, source="codex"), "api")
+        set_plan(db, "pro")
+        set_plan(db, "max", "codex")
+        self.assertEqual((get_plan(db), get_plan(db, source="codex"), get_plan(db, source="claude")), ("pro", "max", "pro"))
+        self.assertEqual(agent_plans(db), {"codex": "max"})
